@@ -5,25 +5,21 @@ from google import genai
 from google.genai import types
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+# Enable CORS cleanly for cross-origin mobile requests
+CORS(app, resources={r"/*": {"origins": "*", "methods": ["POST", "OPTIONS"], "allow_headers": ["Content-Type"]}})
 
-# Initialize Gemini Client (make sure your API key is pasted here)
-client = genai.Client(api_key="AQ.Ab8RN6LWSEYKuZJbWroft05shbLkfH_lrwW4Kp4JdfB5BPJiGw")
-@app.route('/analyze', methods=['POST', 'OPTIONS']) # 👈 Make sure 'OPTIONS' is added here
+# Initialize Gemini Client using the secure cloud environment variable
+client = genai.Client(api_key=os.environ.get("AQ.Ab8RN6LWSEYKuZJbWroft05shbLkfH_lrwW4Kp4JdfB5BPJiGw"))
+
+@app.route('/analyze', methods=['POST', 'OPTIONS'])
 def analyze_food():
-    # 👇 ADD THESE 3 LINES RIGHT HERE 👇
+    # Handle the browser's preflight OPTIONS request instantly
     if request.method == 'OPTIONS':
         return '', 200
 
     user_name = request.form.get('user_name', 'Unknown User')
     print(f"📢 [TRAFFIC] User '{user_name}' is scanning a meal right now!")
-    
-    if 'image' not in request.files:
-        return jsonify({"error": "No image uploaded"}), 400
-        
-    # ... rest of your code remains exactly the same
-@app.route('/analyze', methods=['POST'])
-def analyze_food():
+
     if 'image' not in request.files:
         return jsonify({"error": "No image uploaded"}), 400
         
@@ -36,7 +32,6 @@ def analyze_food():
             mime_type=image_file.content_type,
         )
 
-        # We ask Gemini to return structured data covering all health metrics
         prompt = (
             "Analyze the food in this image and provide a comprehensive health breakdown. "
             "You must format your response EXACTLY like the template below. Do not use markdown, bold text, or symbols. "
@@ -66,4 +61,5 @@ def analyze_food():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)

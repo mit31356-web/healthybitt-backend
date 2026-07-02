@@ -9,7 +9,11 @@ app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*", "methods": ["POST", "OPTIONS"], "allow_headers": ["Content-Type"]}})
 
 # Initialize Gemini Client using the secure cloud environment variable
-client = genai.Client(api_key=os.environ.get("AQ.Ab8RN6LWSEYKuZJbWroft05shbLkfH_lrwW4Kp4JdfB5BPJiGw"))
+# CHANGE THIS LINE FROM:
+# client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+
+# TO THIS SINGLE SAFE LINE:
+client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6LWSEYKuZJbWroft05shbLkfH_lrwW4Kp4JdfB5BPJiGw"))
 
 @app.route('/analyze', methods=['POST', 'OPTIONS'])
 def analyze_food():

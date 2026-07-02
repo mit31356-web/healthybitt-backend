@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MacroSnap // Health Intelligence</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;700;800&display=swap" rel="stylesheet">
+    
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    
+    <style>
+        :root {
+            --bg-color: #f6f8fa;
+            --card-bg: #ffffff;
+            --text-main: #1e293b;
+            --text-muted: #64748b;
+            --primary: #10b981; 
+            --primary-light: #e6f4ea;
+            --border: #e2e8f0;
+            --shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.05);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
+        body { background-color: var(--bg-color); color: var(--text-main); display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
+        
+        .app-container {
+            background: var(--card-bg); width: 100%; max-width: 520px; border-radius: 24px; box-shadow: var(--shadow); padding: 32px; border: 1px solid var(--border);
+        }
+
+        header { text-align: center; margin-bottom: 24px; }
+        header h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; }
+        header h1 span { color: var(--primary); }
+        header p { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
+
+        /* Auth Screen Box */
+        #authScreen { text-align: center; padding: 20px 0; }
+        .google-btn-container { display: flex; justify-content: center; margin-top: 20px; }
+
+        /* Top Profile Strip */
+        .user-profile {
+            display: none; align-items: center; justify-content: space-between; background: #f8fafc; padding: 10px 16px; border-radius: 12px; margin-bottom: 20px; border: 1px solid var(--border);
+        }
+        .user-details { display: flex; align-items: center; gap: 10px; }
+        .user-avatar { width: 32px; height: 32px; border-radius: 50%; }
+        .user-name { font-size: 13px; font-weight: 700; }
+        .logout-btn { background: none; border: none; color: #ef4444; font-size: 12px; font-weight: 700; cursor: pointer; }
+
+        /* Main App Area (Locked initially) */
+        #dashboard { display: none; }
+
+        /* Input Method Switcher Toggles */
+        .mode-toggle {
+            display: flex; gap: 10px; margin-bottom: 20px;
+        }
+        .mode-btn {
+            flex: 1; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: #f8fafc; font-size: 13px; font-weight: 700; cursor: pointer; color: var(--text-muted); transition: all 0.2s;
+        }
+        .mode-btn.active {
+            background: var(--primary-light); color: var(--primary); border-color: var(--primary);
+        }
+
+        /* Input Modules styling */
+        .upload-area { border: 2px dashed #cbd5e1; border-radius: 16px; padding: 24px; text-align: center; cursor: pointer; background: #f8fafc; position: relative; margin-bottom: 20px; }
+        .upload-area:hover { border-color: var(--primary); background: var(--primary-light); }
+        .upload-icon { font-size: 30px; margin-bottom: 6px; display: inline-block; }
+        .upload-area p { font-size: 13px; font-weight: 600; color: #64748b; }
+        #imageInput { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+        
+        /* Camera Layout Components */
+        #cameraContainer { display: none; margin-bottom: 20px; text-align: center; }
+        #videoStream { width: 100%; max-height: 280px; object-fit: cover; border-radius: 16px; background: #000; transform: scaleX(-1); /* Mirrors the view cleanly */ }
+        .btn-capture { background: var(--primary); color: white; border: none; padding: 10px 20px; border-radius: 10px; font-weight: 700; margin-top: 10px; cursor: pointer; width: 100%; }
+
+        #previewImage { width: 100%; max-height: 240px; object-fit: cover; border-radius: 12px; display: none; margin-bottom: 20px; }
+
+        .btn-scan { width: 100%; background-color: var(--text-main); color: white; border: none; padding: 16px; font-size: 16px; font-weight: 700; border-radius: 14px; cursor: pointer; }
+        .status-message { text-align: center; font-size: 14px; font-weight: 500; color: var(--text-muted); margin-top: 20px; display: none; }
+        .results-panel { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 20px; display: none; }
+        .food-title { font-size: 20px; font-weight: 800; margin-bottom: 16px; color: #0f172a; }
+        .verdict-box { background: #f8fafc; padding: 16px; border-radius: 16px; border-left: 4px solid var(--primary); margin-bottom: 20px; }
+        .verdict-header { display: flex; justify-content: space-between; align-items: center; font-weight: 700; margin-bottom: 6px; }
+        .score-badge { background: var(--primary-light); color: var(--primary); padding: 4px 10px; border-radius: 20px; font-size: 13px; }
+        .verdict-text { font-size: 13px; color: #475569; line-height: 1.5; }
+
+        .macro-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 20px; }
+        .macro-card { background: #f8fafc; border-radius: 14px; padding: 14px; border: 1px solid var(--border); }
+        .macro-label { font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; }
+        .macro-value { font-size: 16px; font-weight: 700; color: #0f172a; }
+
+        .tag-section { margin-bottom: 12px; }
+        .tag-label { font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 6px; text-transform: uppercase; }
+        .tag-container { display: flex; flex-wrap: wrap; gap: 6px; }
+        .tag { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 8px; background: #f1f5f9; color: #334155; }
+        .tag.allergen { background: #fef2f2; color: #ef4444; }
+    </style>
+</head>
+<body>
+
+<div class="app-container">
+    <header>
+        <h1>Macro<span>Snap</span> AI</h1>
+        <p>Complete Holistic Health Diagnostics</p>
+    </header>
+
+    <div class="user-profile" id="userProfile">
+        <div class="user-details">
+            <img class="user-avatar" id="userAvatar" src="" alt="avatar">
+            <span class="user-name" id="userName">Hello User</span>
+        </div>
+        <button class="logout-btn" onclick="logout()">Sign Out</button>
+    </div>
+
+    <div id="authScreen">
+        <p style="color: var(--text-muted); font-size: 14px; margin-bottom: 20px;">Please secure your portal using your Google Account to begin logging meals.</p>
+        <div class="google-btn-container">
+            <div id="g_id_onload"
+                 data-client_id="315254226433-klr114dfs0v10ods65t82k314ea3qh0b.apps.googleusercontent.com"
+                 data-callback="handleCredentialResponse"
+                 data-auto_prompt="false">
+            </div>
+            <div class="g_id_signin" data-type="standard" data-size="large" data-theme="outline" data-shape="rectangular"></div>
+        </div>
+    </div>
+
+    <div id="dashboard">
+        
+        <div class="mode-toggle">
+            <button class="mode-btn active" id="btnModeUpload" onclick="switchInputMode('upload')">📁 Upload File</button>
+            <button class="mode-btn" id="btnModeCamera" onclick="switchInputMode('camera')">📷 Live Camera</button>
+        </div>
+
+        <div class="upload-area" id="uploadContainer">
+            <span class="upload-icon">📂</span>
+            <p id="upload-text">Choose an image file from device</p>
+            <input type="file" id="imageInput" accept="image/*">
+        </div>
+
+        <div id="cameraContainer">
+            <video id="videoStream" autoplay playsinline></video>
+            <button class="btn-capture" onclick="captureSnapshot()">⚡ Capture Meal</button>
+        </div>
+
+        <img id="previewImage" alt="Food Preview">
+        
+        <button class="btn-scan" onclick="analyzeFood()">Run Complete Health Scan</button>
+        <div class="status-message" id="statusMessage"></div>
+
+        <div class="results-panel" id="resultsPanel">
+            <div class="food-title" id="foodTitle">Detected Food</div>
+
+            <div class="verdict-box">
+                <div class="verdict-header">
+                    <span>AI Dietitian Verdict</span>
+                    <span class="score-badge" id="healthScore">Health Score: --/100</span>
+                </div>
+                <p class="verdict-text" id="verdictText">...</p>
+            </div>
+            
+            <div class="macro-grid">
+                <div class="macro-card"><div class="macro-label">🔥 Calories</div><div class="macro-value" id="valCal">0 kcal</div></div>
+                <div class="macro-card"><div class="macro-label">💪 Protein</div><div class="macro-value" id="valProt">0g</div></div>
+                <div class="macro-card"><div class="macro-label">🍞 Total Carbs</div><div class="macro-value" id="valCarbs">0g</div></div>
+                <div class="macro-card"><div class="macro-label">🥑 Total Fats</div><div class="macro-value" id="valFats">0g</div></div>
+                <div class="macro-card"><div class="macro-label">🍭 Sugars</div><div class="macro-value" id="valSugar">0g</div></div>
+                <div class="macro-card"><div class="macro-label">🥬 Dietary Fiber</div><div class="macro-value" id="valFiber">0g</div></div>
+                <div class="macro-card" style="grid-column: span 2;"><div class="macro-label">🧂 Sodium</div><div class="macro-value" id="valSodium">0mg</div></div>
+            </div>
+
+            <div class="tag-section">
+                <div class="tag-label">✨ Micronutrients & Vitamins</div>
+                <div class="tag-container" id="vitaminsContainer"></div>
+            </div>
+
+            <div class="tag-section">
+                <div class="tag-label">⚠️ Potential Allergens</div>
+                <div class="tag-container" id="allergensContainer"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let activeStream = null;
+    let capturedBlob = null; // Stores either file or camera capture data frame
+
+    // --- GOOGLE AUTH WORKFLOW ---
+    function parseJwt(token) {
+        var base64Url = token.split('.')[1];
+        var base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        var jsonPayload = decodeURIComponent(window.atob(base64).split('').map(function(c) {
+            return '%' + ('0' + c.charCodeAt(0).toString(16)).slice(-2);
+        }).join(''));
+        return JSON.parse(jsonPayload);
+    }
+
+    function handleCredentialResponse(response) {
+        const responsePayload = parseJwt(response.credential);
+        document.getElementById("userName").textContent = responsePayload.name;
+        document.getElementById("userAvatar").src = responsePayload.picture;
+
+        document.getElementById("authScreen").style.display = "none";
+        document.getElementById("userProfile").style.display = "flex";
+        document.getElementById("dashboard").style.display = "block";
+    }
+
+    function logout() {
+        stopCamera();
+        document.getElementById("authScreen").style.display = "block";
+        document.getElementById("userProfile").style.display = "none";
+        document.getElementById("dashboard").style.display = "none";
+        resetMediaSlots();
+    }
+
+    // --- INTERACTIVE MEDIA CAPTURING ENGINE ---
+    const imageInput = document.getElementById('imageInput');
+    const previewImage = document.getElementById('previewImage');
+    const uploadText = document.getElementById('upload-text');
+    const statusMessage = document.getElementById('statusMessage');
+    const resultsPanel = document.getElementById('resultsPanel');
+    const videoStream = document.getElementById('videoStream');
+
+    function switchInputMode(mode) {
+        resetMediaSlots();
+        if(mode === 'upload') {
+            stopCamera();
+            document.getElementById('uploadContainer').style.display = 'block';
+            document.getElementById('cameraContainer').style.display = 'none';
+            document.getElementById('btnModeUpload').classList.add('active');
+            document.getElementById('btnModeCamera').classList.remove('active');
+        } else {
+            document.getElementById('uploadContainer').style.display = 'none';
+            document.getElementById('cameraContainer').style.display = 'block';
+            document.getElementById('btnModeUpload').classList.remove('active');
+            document.getElementById('btnModeCamera').classList.add('active');
+            startCamera();
+        }
+    }
+
+    async function startCamera() {
+        try {
+            activeStream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: "environment" }, // Prioritizes rear camera on mobile
+                audio: false
+            });
+            videoStream.srcObject = activeStream;
+        } catch (err) {
+            alert("Unable to open camera feed. Please check permissions.");
+            switchInputMode('upload');
+        }
+    }
+
+    function stopCamera() {
+        if (activeStream) {
+            activeStream.getTracks().forEach(track => track.stop());
+            activeStream = null;
+        }
+    }
+
+    // Handle File Selection
+    imageInput.addEventListener('change', function() {
+        const file = this.files[0];
+        if (file) {
+            capturedBlob = file;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                previewImage.src = e.target.result;
+                previewImage.style.display = 'block';
+                uploadText.textContent = "Change Selected File";
+            }
+            reader.readAsDataURL(file);
+        }
+    });
+
+    // Capture Photo From Stream
+    function captureSnapshot() {
+        const canvas = document.createElement('canvas');
+        canvas.width = videoStream.videoWidth;
+        canvas.height = videoStream.videoHeight;
+        const ctx = canvas.getContext('2d');
+        
+        // Match view orientation inversion mirror corrections
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(videoStream, 0, 0, canvas.width, canvas.height);
+        
+        canvas.toBlob(function(blob) {
+            capturedBlob = blob;
+            previewImage.src = URL.createObjectURL(blob);
+            previewImage.style.display = 'block';
+        }, 'image/jpeg');
+    }
+
+    function resetMediaSlots() {
+        imageInput.value = "";
+        capturedBlob = null;
+        previewImage.style.display = 'none';
+        resultsPanel.style.display = 'none';
+        uploadText.textContent = "Choose an image file from device";
+    }
+
+    // --- MEAL ANALYSIS WORKFLOW ---
+    async function analyzeFood() {
+        if (!capturedBlob) {
+            alert("Please select a file or capture a photo first.");
+            return;
+        }
+
+        const formData = new FormData();
+        // File instance inherits names natively, camera streams get dummy designations
+        formData.append('image', capturedBlob, capturedBlob.name || "live_capture.jpg");
+
+        statusMessage.style.display = 'block';
+        statusMessage.innerHTML = "🧬 Analyzing full nutritional profiles...";
+        resultsPanel.style.display = 'none';
+        
+        try {
+            // Replace this URL endpoint with your live render backend server context in production
+            const response = await fetch('https://healthybitt-backend.onrender.com/analyze', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
+
+            if (data.error) {
+                statusMessage.innerHTML = `❌ System Error: ${data.error}`;
+            } else {
+                statusMessage.style.display = 'none';
+                resultsPanel.style.display = 'block';
+                parseAllHealthMetrics(data.result);
+            }
+        } catch (error) {
+            statusMessage.innerHTML = "❌ Connection failed. Check if app.py is running in terminal.";
+        }
+    }
+
+    function parseAllHealthMetrics(text) {
+        const getMatch = (regex, fallback = "--") => {
+            const m = text.match(regex);
+            return m ? m[1].trim() : fallback;
+        };
+
+        document.getElementById('foodTitle').textContent = `🥗 ${getMatch(/Food:\s*(.*)/i, "Healthy Meal")}`;
+        document.getElementById('valCal').textContent = getMatch(/Calories:\s*(.*)/i, "0 kcal");
+        document.getElementById('valProt').textContent = getMatch(/Protein:\s*(.*)/i, "0g");
+        document.getElementById('valCarbs').textContent = getMatch(/Carbs:\s*(.*)/i, "0g");
+        document.getElementById('valFats').textContent = getMatch(/Fats:\s*(.*)/i, "0g");
+        document.getElementById('valSugar').textContent = getMatch(/Sugar:\s*(.*)/i, "0g");
+        document.getElementById('valSodium').textContent = getMatch(/Sodium:\s*(.*)/i, "0mg");
+        document.getElementById('valFiber').textContent = getMatch(/Fiber:\s*(.*)/i, "0g");
+        document.getElementById('verdictText').textContent = getMatch(/Verdict:\s*(.*)/i, "No custom tip calculated.");
+        
+        const score = getMatch(/HealthScore:\s*(\d+)/i, "50");
+        document.getElementById('healthScore').textContent = `Health Score: ${score}/100`;
+
+        const vContainer = document.getElementById('vitaminsContainer');
+        vContainer.innerHTML = "";
+        getMatch(/Vitamins:\s*(.*)/i, "None").split(',').forEach(v => {
+            if(v.trim()) vContainer.innerHTML += `<span class="tag">${v.trim()}</span>`;
+        });
+
+        const aContainer = document.getElementById('allergensContainer');
+        aContainer.innerHTML = "";
+        getMatch(/Allergens:\s*(.*)/i, "None").split(',').forEach(a => {
+            if(a.trim()) aContainer.innerHTML += `<span class="tag allergen">${a.trim()}</span>`;
+        });
+    }
+</script>
+</body>
+</html>

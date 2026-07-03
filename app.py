@@ -1,69 +1,199 @@
 import os
+import sqlite3
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google import genai
 from google.genai import types
 
 app = Flask(__name__)
-# Enable CORS cleanly for cross-origin mobile requests
+
+# Enable CORS cleanly for cross-origin frontend requests
 CORS(app, resources={r"/*": {"origins": "*", "methods": ["POST", "OPTIONS"], "allow_headers": ["Content-Type"]}})
 
-# Initialize Gemini Client using the secure cloud environment variable
-# CHANGE THIS LINE FROM:
-# client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+DATABASE_FILE = "healthybitt.db"
 
-# TO THIS SINGLE SAFE LINE:
-client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6LWSEYKuZJbWroft05shbLkfH_lrwW4Kp4JdfB5BPJiGw"))
+# ==========================================================
+# DATABASE INITIALIZATION
+# ==========================================================
+def init_db():
+    """Creates the SQLite database tables automatically if they don't exist."""
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    
+    # 1. Create Users Profile Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            weight_kg REAL,
+            target_calories INTEGER
+        )
+    ''')
+    
+    # 2. Create 30-Day Diet Plans Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS diet_plans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            day_number INTEGER,
+            meal_type TEXT,
+            food_items TEXT,
+            is_customized BOOLEAN DEFAULT 0,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
+# Run database configuration setup rules
+init_db()
+
+
+# ==========================================================
+# MODERN MULTI-KEY ROTATION LOGIC
+# ==========================================================
+# Your 3 validated AQ API keys loaded safely into the pooling array
+API_KEYS_POOL = [
+    "AQ.Ab8RN6JtkoHbUtgaMiwBceaE_jGOPL7jOVJF_3sCq5xFSUh18A",
+    "AQ.Ab8RN6JNsp8nFFkk3dDYyoyCsWdXpoMVwsRQ0z-Khg0Optq6Qg",
+    "AQ.Ab8RN6KnMVczBVIinC4SPLjexkFjveBe9Sc3PAyUuVmZQGPI5w"
+]
+
+def analyze_image_with_key_rotation(image_bytes, mime_type):
+    """Loops through the API key pool to execute the scan if a 429 occurs."""
+    active_keys = [k.strip() for k in API_KEYS_POOL if k.strip()]
+    if not active_keys:
+        raise Exception("Configuration Error: No API keys present in pool.")
+
+    last_error = None
+    for key in active_keys:
+        try:
+            # Initialize a fresh modern client instance using the current key in the loop
+            client = genai.Client(api_key=key)
+            
+            # Format image data according to modern google-genai standards
+            image_part = types.Part.from_bytes(
+                data=image_bytes,
+                mime_type=mime_type,
+            )
+            
+            prompt = "Return the nutritional breakdown exactly in this text format..."
+            
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=[prompt, image_part]
+            )
+            return response.text
+            
+        except Exception as e:
+            last_error = str(e)
+            # If the current key is exhausted, output a log and fallback to the next slot
+            if "429" in last_error or "RESOURCE_EXHAUSTED" in last_error:
+                print(f"Key starting with {key[:10]} hit quota limit. Rotating to next key...")
+                continue
+            else:
+                raise e
+
+    raise Exception(f"All API keys exhausted. Last internal response: {last_error}")
+
 
 @app.route('/analyze', methods=['POST', 'OPTIONS'])
-def analyze_food():
+def analyze():
     # Handle the browser's preflight OPTIONS request instantly
     if request.method == 'OPTIONS':
         return '', 200
-
-    user_name = request.form.get('user_name', 'Unknown User')
-    print(f"📢 [TRAFFIC] User '{user_name}' is scanning a meal right now!")
-
-    if 'image' not in request.files:
-        return jsonify({"error": "No image uploaded"}), 400
         
-    image_file = request.files['image']
-    image_bytes = image_file.read()
-
+    if 'image' not in request.files:
+        return jsonify({'error': 'No image file provided'}), 400
+        
+    file = request.files['image']
+    mime_type = file.content_type
+    image_bytes = file.read()
+    
     try:
-        image_part = types.Part.from_bytes(
-            data=image_bytes,
-            mime_type=image_file.content_type,
-        )
-
-        prompt = (
-            "Analyze the food in this image and provide a comprehensive health breakdown. "
-            "You must format your response EXACTLY like the template below. Do not use markdown, bold text, or symbols. "
-            "Just plain text lines:\n\n"
-            "Food: [Name]\n"
-            "Calories: [Number] kcal\n"
-            "Protein: [Number]g\n"
-            "Carbs: [Number]g\n"
-            "Fats: [Number]g\n"
-            "Sugar: [Number]g\n"
-            "Sodium: [Number]mg\n"
-            "Fiber: [Number]g\n"
-            "Vitamins: [Key vitamins present]\n"
-            "Allergens: [List potential allergens or None]\n"
-            "HealthScore: [Number from 1 to 100]\n"
-            "Verdict: [One short sentence on how healthy this is and a tip]"
-        )
-
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[image_part, prompt]
-        )
-
-        return jsonify({"result": response.text})
-
+        analysis_result = analyze_image_with_key_rotation(image_bytes, mime_type)
+        return jsonify({'result': analysis_result})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({'error': str(e)}), 500
+
+
+# ==========================================================
+# USER PROFILE & 30-DAY DIET ROUTES
+# ==========================================================
+
+@app.route('/profile', methods=['POST'])
+def save_or_update_profile():
+    data = request.json
+    user_id = data.get('user_id')
+    name = data.get('name')
+    weight = data.get('weight_kg')
+    target_cals = data.get('target_calories')
+    
+    if not user_id:
+        return jsonify({'error': 'Missing user_id'}), 400
+
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        INSERT INTO users (id, name, weight_kg, target_calories)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name=excluded.name,
+            weight_kg=excluded.weight_kg,
+            target_calories=excluded.target_calories
+    ''', (user_id, name, weight, target_cals))
+    
+    cursor.execute('SELECT COUNT(*) FROM diet_plans WHERE user_id = ?', (user_id,))
+    if cursor.fetchone()[0] == 0:
+        for day in range(1, 31):
+            for meal in ['Breakfast', 'Lunch', 'Dinner']:
+                cursor.execute('''
+                    INSERT INTO diet_plans (user_id, day_number, meal_type, food_items)
+                    VALUES (?, ?, ?, ?)
+                ''', (user_id, day, meal, f"Standard healthy {meal} targets"))
+                
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'success', 'message': 'Profile and 30-day timeline initialized.'}), 200
+
+
+@app.route('/diet/<user_id>', methods=['GET'])
+def get_diet_plan(user_id):
+    conn = sqlite3.connect(DATABASE_FILE)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT day_number, meal_type, food_items, is_customized FROM diet_plans WHERE user_id = ? ORDER BY day_number ASC', (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    diet_plan_list = [dict(row) for row in rows]
+    return jsonify({'user_id': user_id, 'diet_plan': diet_plan_list}), 200
+
+
+@app.route('/diet/customize', methods=['POST'])
+def customize_meal():
+    data = request.json
+    user_id = data.get('user_id')
+    day = data.get('day_number')
+    meal_type = data.get('meal_type')
+    new_food = data.get('food_items')
+    
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        UPDATE diet_plans 
+        SET food_items = ?, is_customized = 1
+        WHERE user_id = ? AND day_number = ? AND meal_type = ?
+    ''', (new_food, user_id, day, meal_type))
+    
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'success', 'message': f'Day {day} {meal_type} updated successfully!'}), 200
+
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=5000)

@@ -3,450 +3,133 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MacroSnap // Premium Health Intelligence</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    
-    <script src="https://accounts.google.com/gsi/client" async defer></script>
-    
+    <title>HealthyBitt - Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <style>
-        :root {
-            --bg-color: #0b111e;       /* Deep space premium dark background */
-            --card-bg: #161f30;        /* Sleek navy bento cards */
-            --text-main: #f8fafc;      /* Crisp off-white text */
-            --text-muted: #94a3b8;     /* Soft silver for labels */
-            --primary: #6366f1;        /* Modern AI Indigo accent */
-            --primary-light: rgba(99, 102, 241, 0.15);
-            --accent-green: #10b981;   /* Emerald for high scores/protein */
-            --accent-orange: #f59e0b;  /* Carbs */
-            --accent-pink: #ec4899;    /* Fats */
-            --border: rgba(255, 255, 255, 0.06);
-            --shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-        }
-
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
-        body { background-color: var(--bg-color); color: var(--text-main); display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 16px; }
-        
-        .app-container {
-            background: linear-gradient(145deg, #121a29, #0e1624); width: 100%; max-width: 480px; border-radius: 28px; box-shadow: var(--shadow); padding: 28px; border: 1px solid var(--border); overflow: hidden;
-        }
-
-        header { text-align: center; margin-bottom: 24px; }
-        header h1 { font-size: 28px; font-weight: 800; letter-spacing: -0.75px; color: var(--text-main); }
-        header h1 span { color: var(--primary); }
-        header p { color: var(--text-muted); font-size: 14px; margin-top: 4px; font-weight: 500; }
-
-        /* Top Profile Strip */
-        .user-profile {
-            display: none; align-items: center; justify-content: space-between; background: rgba(255, 255, 255, 0.03); padding: 12px 16px; border-radius: 16px; margin-bottom: 24px; border: 1px solid var(--border); backdrop-filter: blur(10px);
-        }
-        .user-details { display: flex; align-items: center; gap: 12px; }
-        .user-avatar { width: 36px; height: 36px; border-radius: 50%; border: 2px solid var(--primary); }
-        .user-name { font-size: 14px; font-weight: 600; color: var(--text-main); }
-        .logout-btn { background: none; border: none; color: #f43f5e; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity 0.2s; }
-        .logout-btn:hover { opacity: 0.8; }
-
-        #authScreen { text-align: center; padding: 30px 10px; background: var(--card-bg); border-radius: 24px; border: 1px solid var(--border); }
-        .google-btn-container { display: flex; justify-content: center; margin-top: 24px; }
-
-        #dashboard { display: none; }
-
-        /* Input Method Switcher Toggles */
-        .mode-toggle { display: flex; gap: 12px; margin-bottom: 24px; background: rgba(0, 0, 0, 0.2); padding: 6px; border-radius: 14px; border: 1px solid var(--border); }
-        .mode-btn { flex: 1; padding: 12px; border: none; border-radius: 10px; background: transparent; font-size: 14px; font-weight: 600; cursor: pointer; color: var(--text-muted); transition: all 0.2s ease; }
-        .mode-btn.active { background: var(--card-bg); color: var(--text-main); box-shadow: 0 4px 12px rgba(0,0,0,0.2); border: 1px solid var(--border); }
-
-        /* Input Modules styling */
-        .upload-area { border: 2px dashed rgba(255, 255, 255, 0.15); border-radius: 20px; padding: 32px 20px; text-align: center; cursor: pointer; background: rgba(255, 255, 255, 0.01); position: relative; margin-bottom: 24px; transition: all 0.2s; }
-        .upload-area:hover { border-color: var(--primary); background: var(--primary-light); }
-        .upload-icon { font-size: 36px; margin-bottom: 8px; display: inline-block; }
-        .upload-area p { font-size: 14px; font-weight: 500; color: var(--text-muted); }
-        #imageInput { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
-        
-        #cameraContainer { display: none; margin-bottom: 24px; text-align: center; }
-        #videoStream { width: 100%; max-height: 280px; object-fit: cover; border-radius: 20px; background: #000; border: 1px solid var(--border); }
-        .btn-capture { background: var(--primary); color: white; border: none; padding: 14px; border-radius: 14px; font-weight: 700; font-size: 15px; margin-top: 12px; cursor: pointer; width: 100%; box-shadow: 0 8px 20px rgba(99, 102, 241, 0.3); }
-
-        #previewImage { width: 100%; max-height: 260px; object-fit: cover; border-radius: 20px; display: none; margin-bottom: 24px; border: 1px solid var(--border); }
-
-        .btn-scan { width: 100%; background: linear-gradient(135deg, var(--primary), #4f46e5); color: white; border: none; padding: 18px; font-size: 16px; font-weight: 700; border-radius: 16px; cursor: pointer; box-shadow: 0 10px 25px rgba(99, 102, 241, 0.3); transition: all 0.2s; }
-        .btn-scan:active { transform: scale(0.98); }
-
-        /* Skeleton Loading State styling */
-        .skeleton-loader { display: none; margin-top: 28px; }
-        .skeleton-block { background: linear-gradient(90deg, #162032 25%, #202c44 50%, #162032 75%); background-size: 200% 100%; animation: loadingPulse 1.5s infinite; border-radius: 12px; margin-bottom: 14px; }
-        @keyframes loadingPulse { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
-
-        /* Results Display Layout */
-        .results-panel { margin-top: 28px; border-top: 1px solid var(--border); padding-top: 24px; display: none; }
-        .food-title { font-size: 24px; font-weight: 800; margin-bottom: 20px; color: var(--text-main); letter-spacing: -0.5px; }
-        
-        /* Bento Box Layout Configuration */
-        .bento-row { display: flex; gap: 16px; margin-bottom: 16px; }
-        .verdict-box { flex: 1.2; background: var(--card-bg); padding: 18px; border-radius: 20px; border: 1px solid var(--border); display: flex; flex-direction: column; justify-content: center; }
-        .verdict-header { font-weight: 700; font-size: 14px; text-transform: uppercase; color: var(--primary); margin-bottom: 6px; letter-spacing: 0.5px; }
-        .verdict-text { font-size: 13px; color: var(--text-muted); line-height: 1.5; font-weight: 500; }
-
-        /* Radial Circle Score Component */
-        .score-box { flex: 0.8; background: var(--card-bg); border-radius: 20px; border: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; position: relative; }
-        .circle-chart { width: 85px; height: 85px; transform: rotate(-90deg); }
-        .circle-bg { fill: none; stroke: rgba(255,255,255,0.05); stroke-width: 3.5; }
-        .circle-fill { fill: none; stroke: var(--accent-green); stroke-width: 3.5; stroke-linecap: round; stroke-dasharray: 100, 100; transition: stroke-dasharray 1s ease-in-out; }
-        .score-text-center { position: absolute; font-size: 18px; font-weight: 800; color: var(--text-main); top: 40%; transform: translateY(-30%); }
-        .score-label { font-size: 11px; font-weight: 700; color: var(--text-muted); margin-top: 8px; text-transform: uppercase; }
-
-        /* Asymmetric Grid Cards */
-        .macro-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-bottom: 20px; }
-        .macro-card { background: var(--card-bg); border-radius: 20px; padding: 16px; border: 1px solid var(--border); display: flex; flex-direction: column; justify-content: space-between; position: relative; overflow: hidden; }
-        .macro-card:nth-child(1) { grid-column: span 2; background: linear-gradient(135deg, #1e2942, #141d30); border-color: rgba(99, 102, 241, 0.2); }
-        .macro-label { font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
-        .macro-value { font-size: 18px; font-weight: 700; color: var(--text-main); }
-        
-        /* Premium Macro Progress Gauges */
-        .progress-bar-container { width: 100%; height: 5px; background: rgba(255, 255, 255, 0.06); border-radius: 10px; margin-top: 10px; overflow: hidden; }
-        .progress-bar-fill { height: 100%; width: 0%; border-radius: 10px; transition: width 1s ease-in-out; }
-
-        .tag-section { margin-bottom: 16px; }
-        .tag-label { font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
-        .tag-container { display: flex; flex-wrap: wrap; gap: 8px; }
-        .tag { font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 10px; background: rgba(255, 255, 255, 0.04); color: #cbd5e1; border: 1px solid var(--border); }
-        .tag.allergen { background: rgba(244, 63, 94, 0.1); color: #f43f5e; border-color: rgba(244, 63, 94, 0.2); }
+        body { background-color: #0f172a; color: #f8fafc; font-family: sans-serif; }
     </style>
 </head>
-<body>
+<body class="p-6">
 
-<div class="app-container">
-    <header>
-        <h1>Macro<span>Snap</span> AI</h1>
-        <p>Premium Health Diagnostics</p>
-    </header>
+    <div class="max-w-6xl mx-auto space-y-6">
+        <header class="flex justify-between items-center border-b border-slate-700 pb-4">
+            <h1 class="text-3xl font-bold text-emerald-400">🥗 HealthyBitt</h1>
+            <div id="userBadge" class="bg-slate-800 px-4 py-2 rounded-lg text-sm">Loading profile...</div>
+        </header>
 
-    <div class="user-profile" id="userProfile">
-        <div class="user-details">
-            <img class="user-avatar" id="userAvatar" src="" alt="avatar">
-            <span class="user-name" id="userName">Hello User</span>
-        </div>
-        <button class="logout-btn" onclick="logout()">Sign Out</button>
-    </div>
-
-    <div id="authScreen">
-        <p style="color: var(--text-muted); font-size: 14px; margin-bottom: 20px; line-height: 1.5;">Please secure your portal using your Google Account to begin logging meals.</p>
-        <div class="google-btn-container">
-            <div id="g_id_onload"
-                 data-client_id="315254226433-klr114dfs0v10ods65t82k314ea3qh0b.apps.googleusercontent.com"
-                 data-callback="handleCredentialResponse"
-                 data-auto_prompt="false">
-            </div>
-            <div class="g_id_signin" data-type="standard" data-size="large" data-theme="dark" data-shape="rectangular"></div>
-        </div>
-    </div>
-
-    <div id="dashboard">
-        <div class="mode-toggle">
-            <button class="mode-btn active" id="btnModeUpload" onclick="switchInputMode('upload')">📁 Upload File</button>
-            <button class="mode-btn" id="btnModeCamera" onclick="switchInputMode('camera')">📷 Live Camera</button>
-        </div>
-
-        <div class="upload-area" id="uploadContainer">
-            <span class="upload-icon">📂</span>
-            <p id="upload-text">Choose an image file from device</p>
-            <input type="file" id="imageInput" accept="image/*">
-        </div>
-
-        <div id="cameraContainer">
-            <video id="videoStream" autoplay playsinline></video>
-            <button class="btn-capture" onclick="captureSnapshot()">⚡ Capture Meal</button>
-        </div>
-
-        <img id="previewImage" alt="Food Preview">
-        
-        <button class="btn-scan" onclick="analyzeFood()">Run Complete Health Scan</button>
-
-        <div class="skeleton-loader" id="skeletonLoader">
-            <div class="skeleton-block" style="width: 60%; height: 28px; margin-bottom: 20px;"></div>
-            <div style="display: flex; gap: 16px; margin-bottom: 16px;">
-                <div class="skeleton-block" style="flex: 1.2; height: 110px; border-radius: 20px;"></div>
-                <div class="skeleton-block" style="flex: 0.8; height: 110px; border-radius: 20px;"></div>
-            </div>
-            <div class="skeleton-block" style="width: 100%; height: 75px; border-radius: 20px;"></div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-                <div class="skeleton-block" style="height: 75px; border-radius: 20px;"></div>
-                <div class="skeleton-block" style="height: 75px; border-radius: 20px;"></div>
-            </div>
-        </div>
-
-        <div class="results-panel" id="resultsPanel">
-            <div class="food-title" id="foodTitle">Detected Food</div>
-
-            <div class="bento-row">
-                <div class="verdict-box">
-                    <div class="verdict-header">Dietitian Verdict</div>
-                    <p class="verdict-text" id="verdictText">...</p>
-                </div>
-                <div class="score-box">
-                    <svg class="circle-chart" viewBox="0 0 36 36">
-                        <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                        <path class="circle-fill" id="scoreCircle" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                    </svg>
-                    <div class="score-text-center" id="healthScoreNum">--</div>
-                    <div class="score-label">Score</div>
-                </div>
-            </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
             
-            <div class="macro-grid">
-                <div class="macro-card">
-                    <div class="macro-label">🔥 Energy / Calories</div>
-                    <div class="macro-value" id="valCal">0 kcal</div>
-                    <div class="progress-bar-container"><div class="progress-bar-fill" id="fillCal" style="background: var(--primary);"></div></div>
-                </div>
-                <div class="macro-card">
-                    <div class="macro-label">💪 Protein</div>
-                    <div class="macro-value" id="valProt">0g</div>
-                    <div class="progress-bar-container"><div class="progress-bar-fill" id="fillProt" style="background: var(--accent-green);"></div></div>
-                </div>
-                <div class="macro-card">
-                    <div class="macro-label">🍞 Total Carbs</div>
-                    <div class="macro-value" id="valCarbs">0g</div>
-                    <div class="progress-bar-container"><div class="progress-bar-fill" id="fillCarbs" style="background: var(--accent-orange);"></div></div>
-                </div>
-                <div class="macro-card">
-                    <div class="macro-label">🥑 Total Fats</div>
-                    <div class="macro-value" id="valFats">0g</div>
-                    <div class="progress-bar-container"><div class="progress-bar-fill" id="fillFats" style="background: var(--accent-pink);"></div></div>
-                </div>
-                <div class="macro-card">
-                    <div class="macro-label">🍭 Sugars</div>
-                    <div class="macro-value" id="valSugar">0g</div>
-                </div>
-                <div class="macro-card">
-                    <div class="macro-label">🥬 Dietary Fiber</div>
-                    <div class="macro-value" id="valFiber">0g</div>
-                </div>
-                <div class="macro-card" style="grid-column: span 2;">
-                    <div class="macro-label">🧂 Sodium Complex</div>
-                    <div class="macro-value" id="valSodium">0mg</div>
+            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 shadow-xl space-y-4">
+                <h2 class="text-xl font-semibold text-emerald-300">👤 My Health Profile</h2>
+                <div class="space-y-3">
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">Target Calories</label>
+                        <input id="profCalories" type="number" value="2100" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-emerald-400 font-bold">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">Current Weight (kg)</label>
+                        <input id="profWeight" type="number" value="72" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200">
+                    </div>
+                    <button onclick="updateBackendProfile()" class="w-full bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold py-2 rounded-xl transition">
+                        Save Profile
+                    </button>
                 </div>
             </div>
 
-            <div class="tag-section">
-                <div class="tag-label">✨ Micronutrients & Vitamins</div>
-                <div class="tag-container" id="vitaminsContainer"></div>
+            <div class="md:col-span-2 bg-slate-800 p-6 rounded-2xl border border-slate-700 shadow-xl flex flex-col">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold text-emerald-300">📅 Your 30-Day Diet Timeline</h2>
+                    <span class="text-xs bg-slate-700 px-2 py-1 rounded text-slate-300">SQLite Database Active</span>
+                </div>
+                
+                <div id="dietGrid" class="grid grid-cols-2 sm:grid-cols-3 gap-3 overflow-y-auto max-h-[320px] pr-2">
+                    </div>
             </div>
 
-            <div class="tag-section">
-                <div class="tag-label">⚠️ Potential Allergens</div>
-                <div class="tag-container" id="allergensContainer"></div>
-            </div>
         </div>
     </div>
-</div>
 
-<script>
-    let activeStream = null;
-    let capturedBlob = null;
+    <script>
+        const MOCK_USER_ID = "user_mit70";
+        // Make sure this line in your index.html script is exactly pointing to Render:
+const BACKEND_URL = "https://healthybitt-backend-1.onrender.com"; // Points to your Render server
 
-    // --- GOOGLE AUTH WORKFLOW ---
-    function parseJwt(token) {
-        var base64Url = token.split('.')[1];
-        var base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-        var jsonPayload = decodeURIComponent(window.atob(base64).split('').map(function(c) {
-            return '%' + ('0' + c.charCodeAt(0).toString(16)).slice(-2);
-        }).join(''));
-        return JSON.parse(jsonPayload);
-    }
+        // Fetch user data from your new SQLite tables on page load
+        async function loadDashboard() {
+            try {
+                document.getElementById('userBadge').innerText = `ID: ${MOCK_USER_ID}`;
+                
+                // Get 30 day timeline configuration
+                const response = await fetch(`${BACKEND_URL}/diet/${MOCK_USER_ID}`);
+                const data = await response.json();
+                
+                const grid = document.getElementById('dietGrid');
+                grid.innerHTML = ""; // Reset loader view
+                
+                // Group meals by day number to render clean timeline cards
+                const daysMap = {};
+                data.diet_plan.forEach(item => {
+                    if (!daysMap[item.day_number]) daysMap[item.day_number] = [];
+                    daysMap[item.day_number].push(item);
+                });
 
-    function handleCredentialResponse(response) {
-        const responsePayload = parseJwt(response.credential);
-        document.getElementById("userName").textContent = responsePayload.name;
-        document.getElementById("userAvatar").src = responsePayload.picture;
-
-        document.getElementById("authScreen").style.display = "none";
-        document.getElementById("userProfile").style.display = "flex";
-        document.getElementById("dashboard").style.display = "block";
-    }
-
-    function logout() {
-        stopCamera();
-        document.getElementById("authScreen").style.display = "block";
-        document.getElementById("userProfile").style.display = "none";
-        document.getElementById("dashboard").style.display = "none";
-        resetMediaSlots();
-    }
-
-    // --- INTERACTIVE MEDIA CAPTURING ENGINE ---
-    const imageInput = document.getElementById('imageInput');
-    const previewImage = document.getElementById('previewImage');
-    const uploadText = document.getElementById('upload-text');
-    const skeletonLoader = document.getElementById('skeletonLoader');
-    const resultsPanel = document.getElementById('resultsPanel');
-    const videoStream = document.getElementById('videoStream');
-
-    function switchInputMode(mode) {
-        resetMediaSlots();
-        if(mode === 'upload') {
-            stopCamera();
-            document.getElementById('uploadContainer').style.display = 'block';
-            document.getElementById('cameraContainer').style.display = 'none';
-            document.getElementById('btnModeUpload').classList.add('active');
-            document.getElementById('btnModeCamera').classList.remove('active');
-        } else {
-            document.getElementById('uploadContainer').style.display = 'none';
-            document.getElementById('cameraContainer').style.display = 'block';
-            document.getElementById('btnModeUpload').classList.remove('active');
-            document.getElementById('btnModeCamera').classList.add('active');
-            startCamera();
-        }
-    }
-
-    async function startCamera() {
-        try {
-            activeStream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: "environment" },
-                audio: false
-            });
-            videoStream.srcObject = activeStream;
-        } catch (err) {
-            alert("Unable to open camera feed. Please check permissions.");
-            switchInputMode('upload');
-        }
-    }
-
-    function stopCamera() {
-        if (activeStream) {
-            activeStream.getTracks().forEach(track => track.stop());
-            activeStream = null;
-        }
-    }
-
-    imageInput.addEventListener('change', function() {
-        const file = this.files[0];
-        if (file) {
-            capturedBlob = file;
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                previewImage.src = e.target.result;
-                previewImage.style.display = 'block';
-                uploadText.textContent = "Change Selected File";
+                // Inject structured HTML elements for all 30 days dynamically
+                for (let day = 1; day <= 30; day++) {
+                    const dayCard = document.createElement('div');
+                    dayCard.className = "bg-slate-900 border border-slate-700 p-3 rounded-xl hover:border-emerald-500 transition cursor-pointer";
+                    dayCard.innerHTML = `
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="font-bold text-sm text-slate-200">Day ${day}</span>
+                            <span class="text-[10px] text-emerald-400">✨ Active</span>
+                        </div>
+                        <p class="text-xs text-slate-400 truncate">Tap to customize meals</p>
+                    `;
+                    dayCard.onclick = () => customizeDayPrompt(day);
+                    grid.appendChild(dayCard);
+                }
+            } catch (err) {
+                console.error("Dashboard failed to sync:", err);
             }
-            reader.readAsDataURL(file);
-        }
-    });
-
-    function captureSnapshot() {
-        const canvas = document.createElement('canvas');
-        canvas.width = videoStream.videoWidth;
-        canvas.height = videoStream.videoHeight;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(videoStream, 0, 0, canvas.width, canvas.height);
-        
-        canvas.toBlob(function(blob) {
-            capturedBlob = blob;
-            previewImage.src = URL.createObjectURL(blob);
-            previewImage.style.display = 'block';
-        }, 'image/jpeg');
-    }
-
-    function resetMediaSlots() {
-        imageInput.value = "";
-        capturedBlob = null;
-        previewImage.style.display = 'none';
-        resultsPanel.style.display = 'none';
-        skeletonLoader.style.display = 'none';
-        uploadText.textContent = "Choose an image file from device";
-    }
-
-    // --- MEAL ANALYSIS WORKFLOW ---
-    async function analyzeFood() {
-        if (!capturedBlob) {
-            alert("Please select a file or capture a photo first.");
-            return;
         }
 
-        const formData = new FormData();
-        formData.append('image', capturedBlob, capturedBlob.name || "live_capture.jpg");
+         JSON tracking update to SQLite DB
+        async function updateBackendProfile() {
+            const cals = document.getElementById('profCalories').value;
+            const weight = document.getElementById('profWeight').value;
 
-        // Swap directly to sleek shimmering skeleton frames
-        skeletonLoader.style.display = 'block';
-        resultsPanel.style.display = 'none';
-        
-        try {
-            const response = await fetch('https://healthybitt-backend-1.onrender.com/analyze', {
+            await fetch(`${BACKEND_URL}/profile`, {
                 method: 'POST',
-                body: formData
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    user_id: MOCK_USER_ID,
+                    name: "mit70",
+                    weight_kg: parseFloat(weight),
+                    target_calories: parseInt(cals)
+                })
             });
-            const data = await response.json();
-
-            skeletonLoader.style.display = 'none';
-
-            if (data.error) {
-                alert(`System Error: ${data.error}`);
-            } else {
-                resultsPanel.style.display = 'block';
-                parseAllHealthMetrics(data.result);
-            }
-        } catch (error) {
-            skeletonLoader.style.display = 'none';
-            alert("Connection failed. Please check your network or try again.");
+            alert("Success: Health targets locked into backend SQLite database!");
         }
-    }
 
-    function parseAllHealthMetrics(text) {
-        const getMatch = (regex, fallback = "--") => {
-            const m = text.match(regex);
-            return m ? m[1].trim() : fallback;
-        };
+        async function customizeDayPrompt(dayNumber) {
+            const newMeal = prompt(`Enter custom diet items for Day ${dayNumber} Breakfast:`);
+            if (!newMeal) return;
 
-        // Parse Strings safely
-        document.getElementById('foodTitle').textContent = `🥗 ${getMatch(/Food:\s*(.*)/i, "Healthy Meal")}`;
-        
-        const calStr = getMatch(/Calories:\s*(.*)/i, "0 kcal");
-        const protStr = getMatch(/Protein:\s*(.*)/i, "0g");
-        const carbStr = getMatch(/Carbs:\s*(.*)/i, "0g");
-        const fatStr = getMatch(/Fats:\s*(.*)/i, "0g");
+            await fetch(`${BACKEND_URL}/diet/customize`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    user_id: MOCK_USER_ID,
+                    day_number: dayNumber,
+                    meal_type: "Breakfast",
+                    food_items: newMeal
+                })
+            });
+            alert(`Day ${dayNumber} updated successfully!`);
+            loadDashboard();
+        }
 
-        document.getElementById('valCal').textContent = calStr;
-        document.getElementById('valProt').textContent = protStr;
-        document.getElementById('valCarbs').textContent = carbStr;
-        document.getElementById('valFats').textContent = fatStr;
-        document.getElementById('valSugar').textContent = getMatch(/Sugar:\s*(.*)/i, "0g");
-        document.getElementById('valFiber').textContent = getMatch(/Fiber:\s*(.*)/i, "0g");
-        document.getElementById('valSodium').textContent = getMatch(/Sodium:\s*(.*)/i, "0mg");
-        document.getElementById('verdictText').textContent = getMatch(/Verdict:\s*(.*)/i, "Metrics loaded.");
-        
-        // Animate Radial Score Circle
-        const score = parseInt(getMatch(/HealthScore:\s*(\d+)/i, "0"), 10);
-        document.getElementById('healthScoreNum').textContent = score;
-        const circle = document.getElementById('scoreCircle');
-        circle.style.strokeDasharray = `${score}, 100`;
-
-        // Update color values of circle depending on rating parameters
-        if(score >= 80) circle.style.stroke = "var(--accent-green)";
-        else if(score >= 50) circle.style.stroke = "var(--accent-orange)";
-        else circle.style.stroke = "#f43f5e";
-
-        // Animate Micro Progress Bars
-        document.getElementById('fillCal').style.width = `${Math.min((parseInt(calStr, 10) / 800) * 100, 100)}%`;
-        document.getElementById('fillProt').style.width = `${Math.min((parseInt(protStr, 10) / 45) * 100, 100)}%`;
-        document.getElementById('fillCarbs').style.width = `${Math.min((parseInt(carbStr, 10) / 100) * 100, 100)}%`;
-        document.getElementById('fillFats').style.width = `${Math.min((parseInt(fatStr, 10) / 35) * 100, 100)}%`;
-
-        // Build micronutrient components cleanly
-        const vContainer = document.getElementById('vitaminsContainer');
-        vContainer.innerHTML = "";
-        getMatch(/Vitamins:\s*(.*)/i, "None").split(',').forEach(v => {
-            if(v.trim() && v.trim() !== "None") vContainer.innerHTML += `<span class="tag">${v.trim()}</span>`;
-        });
-        if(!vContainer.innerHTML) vContainer.innerHTML = '<span class="tag">None detected</span>';
-
-        // Build allergen warnings components safely
-        const aContainer = document.getElementById('allergensContainer');
-        aContainer.innerHTML = "";
-        getMatch(/Allergens:\s*(.*)/i, "None").split(',').forEach(a => {
-            if(a.trim() && a.trim() !== "None") aContainer.innerHTML += `<span class="tag allergen">⚠️ ${a.trim()}</span>`;
-        });
-        if(!aContainer.innerHTML) aContainer.innerHTML = '<span class="tag">Clear (None)</span>';
-    }
-</script>
+        // Initialize display routines
+        window.onload = loadDashboard;
+    </script>
 </body>
 </html>

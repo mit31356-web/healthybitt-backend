@@ -3,7 +3,6 @@ import sqlite3
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google import genai
-from google.genai import types
 
 app = Flask(__name__)
 
@@ -46,14 +45,11 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Run database configuration setup rules
 init_db()
 
-
 # ==========================================================
-# MODERN MULTI-KEY ROTATION LOGIC
+# MODERN MULTI-KEY ROTATION LOGIC (WITH NEW CLIENT.CREATE)
 # ==========================================================
-# Your 3 validated AQ API keys loaded safely into the pooling array
 API_KEYS_POOL = [
     "AQ.Ab8RN6JtkoHbUtgaMiwBceaE_jGOPL7jOVJF_3sCq5xFSUh18A",
     "AQ.Ab8RN6JNsp8nFFkk3dDYyoyCsWdXpoMVwsRQ0z-Khg0Optq6Qg",
@@ -61,7 +57,7 @@ API_KEYS_POOL = [
 ]
 
 def analyze_image_with_key_rotation(image_bytes, mime_type):
-    """Loops through the API key pool to execute the scan if a 429 occurs."""
+    """Loops through the AQ key pool using modern Interactions client execution."""
     active_keys = [k.strip() for k in API_KEYS_POOL if k.strip()]
     if not active_keys:
         raise Exception("Configuration Error: No API keys present in pool.")
@@ -69,38 +65,31 @@ def analyze_image_with_key_rotation(image_bytes, mime_type):
     last_error = None
     for key in active_keys:
         try:
-            # Initialize a fresh modern client instance using the current key in the loop
+            # Initialize modern genai client instance with your AQ. token
             client = genai.Client(api_key=key)
-            
-            # Format image data according to modern google-genai standards
-            image_part = types.Part.from_bytes(
-                data=image_bytes,
-                mime_type=mime_type,
-            )
             
             prompt = "Return the nutritional breakdown exactly in this text format..."
             
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=[prompt, image_part]
+            # Use the correct modern structural method required for AQ. authorization tokens
+            interaction = client.create(
+                model="gemini-2.5-flash",
+                input=[prompt, {"mime_type": mime_type, "data": image_bytes}]
             )
-            return response.text
+            return interaction.output_text
             
         except Exception as e:
             last_error = str(e)
-            # If the current key is exhausted, output a log and fallback to the next slot
-            if "429" in last_error or "RESOURCE_EXHAUSTED" in last_error:
-                print(f"Key starting with {key[:10]} hit quota limit. Rotating to next key...")
+            if "429" in last_error or "RESOURCE_EXHAUSTED" in last_error or "401" in last_error:
+                print(f"Key slot starting with {key[:10]} dropped. Rotating to fallback slot...")
                 continue
             else:
                 raise e
 
-    raise Exception(f"All API keys exhausted. Last internal response: {last_error}")
+    raise Exception(f"All API key communication routines dropped. Status: {last_error}")
 
 
 @app.route('/analyze', methods=['POST', 'OPTIONS'])
 def analyze():
-    # Handle the browser's preflight OPTIONS request instantly
     if request.method == 'OPTIONS':
         return '', 200
         

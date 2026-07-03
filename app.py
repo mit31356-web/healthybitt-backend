@@ -3,6 +3,7 @@ import sqlite3
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google import genai
+from google.genai import types
 
 app = Flask(__name__)
 
@@ -48,7 +49,7 @@ def init_db():
 init_db()
 
 # ==========================================================
-# MODERN MULTI-KEY ROTATION LOGIC (WITH NEW CLIENT.CREATE)
+# MODERN MULTI-KEY ROTATION LOGIC (STABLE GA VERSION)
 # ==========================================================
 API_KEYS_POOL = [
     "AQ.Ab8RN6JtkoHbUtgaMiwBceaE_jGOPL7jOVJF_3sCq5xFSUh18A",
@@ -57,7 +58,7 @@ API_KEYS_POOL = [
 ]
 
 def analyze_image_with_key_rotation(image_bytes, mime_type):
-    """Loops through the AQ key pool using modern Interactions client execution."""
+    """Loops through the AQ key pool using standard content generation structures."""
     active_keys = [k.strip() for k in API_KEYS_POOL if k.strip()]
     if not active_keys:
         raise Exception("Configuration Error: No API keys present in pool.")
@@ -65,17 +66,23 @@ def analyze_image_with_key_rotation(image_bytes, mime_type):
     last_error = None
     for key in active_keys:
         try:
-            # Initialize modern genai client instance with your AQ. token
+            # Initialize stable genai client instance with your modern AQ. token
             client = genai.Client(api_key=key)
             
             prompt = "Return the nutritional breakdown exactly in this text format..."
             
-            # Use the correct modern structural method required for AQ. authorization tokens
-            interaction = client.create(
-                model="gemini-2.5-flash",
-                input=[prompt, {"mime_type": mime_type, "data": image_bytes}]
+            # Form image part bytes content payload structure natively
+            image_part = types.Part.from_bytes(
+                data=image_bytes,
+                mime_type=mime_type,
             )
-            return interaction.output_text
+            
+            # Execute standard content block analysis call
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[prompt, image_part]
+            )
+            return response.text
             
         except Exception as e:
             last_error = str(e)
@@ -85,7 +92,7 @@ def analyze_image_with_key_rotation(image_bytes, mime_type):
             else:
                 raise e
 
-    raise Exception(f"All API key communication routines dropped. Status: {last_error}")
+    raise Exception(f"All API key communication channels dropped. Status: {last_error}")
 
 
 @app.route('/analyze', methods=['POST', 'OPTIONS'])

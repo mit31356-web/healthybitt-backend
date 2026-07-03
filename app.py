@@ -54,7 +54,8 @@ init_db()
 API_KEYS_POOL = [
     "AQ.Ab8RN6JtkoHbUtgaMiwBceaE_jGOPL7jOVJF_3sCq5xFSUh18A",
     "AQ.Ab8RN6JNsp8nFFkk3dDYyoyCsWdXpoMVwsRQ0z-Khg0Optq6Qg",
-    "AQ.Ab8RN6KnMVczBVIinC4SPLjexkFjveBe9Sc3PAyUuVmZQGPI5w"
+    "AQ.Ab8RN6KnMVczBVIinC4SPLjexkFjveBe9Sc3PAyUuVmZQGPI5w",
+    "AQ.Ab8RN6KDPPHf-d2vNzwmx1vNT147TDlf68oZ487ihIKQo9_nvg"
 ]
 
 def analyze_image_with_key_rotation(image_bytes, mime_type):

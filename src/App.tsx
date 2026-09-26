@@ -222,7 +222,19 @@ export default function App() {
   // Live Food Scan states
   const [liveScanDetectedFood, setLiveScanDetectedFood] = useState<FoodAnalysisResult | null>(null);
   const [isAnalyzingFrame, setIsAnalyzingFrame] = useState(false);
-  const [isShaking, setIsShaking] = useState(false);
+  const [shakeDetectedVisual, setShakeDetectedVisual] = useState(false);
+  const lastShakeTimeRef = useRef(0);
+  const liveScanDetectedFoodRef = useRef<FoodAnalysisResult | null>(null);
+  liveScanDetectedFoodRef.current = liveScanDetectedFood;
+  const isAnalyzingFrameRef = useRef(false);
+  isAnalyzingFrameRef.current = isAnalyzingFrame;
+  const isSavingMealRef = useRef(false);
+  isSavingMealRef.current = isSavingMeal;
+  const showCameraScannerRef = useRef(false);
+  showCameraScannerRef.current = showCameraScanner;
+  const handleLiveScanRef = useRef<(isAuto?: boolean) => Promise<void>>(() => Promise.resolve());
+  const handleSaveLiveScannedFoodRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const capturePhotoRef = useRef<() => void>(() => {});
   const liveVideoRef = useRef<HTMLVideoElement>(null);
 
   // Wheel picker scroll refs
@@ -1217,7 +1229,7 @@ export default function App() {
           let stream: MediaStream;
           try {
             stream = await navigator.mediaDevices.getUserMedia({
-              video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
+              video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
             });
           } catch (firstErr) {
             console.warn("Live scan camera environment facing constraint failed, trying generic video:", firstErr);
@@ -1283,30 +1295,69 @@ export default function App() {
     };
   }, [activeTab, cameraTrigger]);
 
-  // Shake detection hook for Live Scan
+  // Shake detection hook: shake phone to scan or confirm/log scanned food
   useEffect(() => {
     let lastX = 0, lastY = 0, lastZ = 0;
     let lastTime = 0;
-    const SHAKE_THRESHOLD = 25; // Good shake threshold for mobile acceleration differences
+    const SHAKE_THRESHOLD = 15; // Responsive threshold for mobile wrist shake / flick
+
+    const triggerShakeAction = () => {
+      const now = Date.now();
+      if (now - lastShakeTimeRef.current < 1600) return; // 1.6s debounce cooldown
+      lastShakeTimeRef.current = now;
+
+      // Haptic feedback (vibration)
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        try { navigator.vibrate([40, 50, 40]); } catch (_) {}
+      }
+
+      setShakeDetectedVisual(true);
+      setTimeout(() => setShakeDetectedVisual(false), 1400);
+
+      // 1. In Diet tab live scanner
+      if (activeTab === 'diet' && cameraPermissionStatus === 'granted') {
+        if (!liveScanDetectedFoodRef.current) {
+          // Food not scanned yet: trigger live scan!
+          if (!isAnalyzingFrameRef.current) {
+            showToast("📱 Shake detected! Scanning food frame...", "info");
+            handleLiveScanRef.current(false);
+          }
+        } else {
+          // Food already scanned: shake confirms & logs meal to diary!
+          if (!isSavingMealRef.current) {
+            showToast("📱 Shake detected! Logging meal to diary... 🎉", "success");
+            handleSaveLiveScannedFoodRef.current();
+          }
+        }
+      } else if (showCameraScannerRef.current) {
+        // 2. In full-screen modal camera scanner
+        showToast("📱 Shake detected! Capturing food photo...", "info");
+        capturePhotoRef.current();
+      }
+    };
 
     const handleMotionEvent = (event: DeviceMotionEvent) => {
-      const acceleration = event.accelerationIncludingGravity || event.acceleration;
-      if (!acceleration) return;
+      const acc = event.acceleration || event.accelerationIncludingGravity;
+      if (!acc) return;
 
       const currentTime = Date.now();
-      if ((currentTime - lastTime) > 100) {
-        const diffTime = currentTime - lastTime;
+      if ((currentTime - lastTime) > 80) {
+        const diffTime = (currentTime - lastTime) / 1000;
         lastTime = currentTime;
 
-        const x = acceleration.x || 0;
-        const y = acceleration.y || 0;
-        const z = acceleration.z || 0;
+        const x = acc.x || 0;
+        const y = acc.y || 0;
+        const z = acc.z || 0;
 
-        // Calculate velocity or acceleration changes
-        const speed = Math.abs(x + y + z - lastX - lastY - lastZ) / diffTime * 10000;
+        let delta = 0;
+        if (event.acceleration && event.acceleration.x !== null) {
+          delta = Math.sqrt(x * x + y * y + z * z);
+        } else {
+          delta = (Math.abs(x - lastX) + Math.abs(y - lastY) + Math.abs(z - lastZ)) / (diffTime || 0.1);
+        }
 
-        if (speed > SHAKE_THRESHOLD) {
-          setIsShaking(true);
+        if (delta > SHAKE_THRESHOLD) {
+          triggerShakeAction();
         }
 
         lastX = x;
@@ -1315,17 +1366,9 @@ export default function App() {
       }
     };
 
-    // Auto clear shaking state if no movement is detected for 1.2 seconds
-    let clearTimer: any = null;
-    if (isShaking) {
-      clearTimer = setTimeout(() => {
-        setIsShaking(false);
-      }, 1200);
-    }
-
-    if (activeTab === 'diet' && cameraPermissionStatus === 'granted') {
+    if ((activeTab === 'diet' && cameraPermissionStatus === 'granted') || showCameraScanner) {
       window.addEventListener('devicemotion', handleMotionEvent);
-      // Request permissions for iOS if necessary
+      // Request iOS permissions if supported
       if (
         typeof DeviceMotionEvent !== 'undefined' &&
         typeof (DeviceMotionEvent as any).requestPermission === 'function'
@@ -1336,30 +1379,8 @@ export default function App() {
 
     return () => {
       window.removeEventListener('devicemotion', handleMotionEvent);
-      if (clearTimer) clearTimeout(clearTimer);
     };
-  }, [activeTab, cameraPermissionStatus, isShaking]);
-
-  // 10-second automatic camera timeout if no food is detected
-  useEffect(() => {
-    let timer: any = null;
-    if (activeTab === 'diet' && cameraPermissionStatus === 'granted' && !isCameraInitializing && !liveScanDetectedFood) {
-      console.log("[Scanner Timer] Started 10-second food scan timer.");
-      timer = setTimeout(() => {
-        if (activeTab === 'diet' && !liveScanDetectedFood) {
-          console.log("[Scanner Timer] No food detected in 10 seconds. Automatically turning off and redirecting to home.");
-          setActiveTab('home');
-          showToast("No food detected within 10 seconds. Scanner automatically turned off.", "info");
-        }
-      }, 10000);
-    }
-    return () => {
-      if (timer) {
-        console.log("[Scanner Timer] Cleared food scan timer.");
-        clearTimeout(timer);
-      }
-    };
-  }, [activeTab, cameraPermissionStatus, isCameraInitializing, liveScanDetectedFood]);
+  }, [activeTab, cameraPermissionStatus, showCameraScanner]);
 
   // General tab change listener to clean up other camera states and text-to-speech
   useEffect(() => {
@@ -1454,9 +1475,12 @@ export default function App() {
       name.includes('no visible') ||
       name.includes('unable to') ||
       name.includes('camera blocked') ||
-      name.includes('no scan') ||
-      (res.calories || 0) <= 0
+      name.includes('no scan')
     ) {
+      return false;
+    }
+    const isZeroCalBeverage = name.includes('coffee') || name.includes('tea') || name.includes('water') || name.includes('diet');
+    if ((res.calories || 0) <= 0 && !isZeroCalBeverage) {
       return false;
     }
     return true;
@@ -1469,79 +1493,13 @@ export default function App() {
       setScanError(null);
     }
 
-    if (isShaking) {
-      setIsAnalyzingFrame(false);
-      if (!isAuto) {
-        const shakeMsg = "Do not shake mobile. Stay stable to get an accurate answer.";
-        setScanError(shakeMsg);
-        if ('speechSynthesis' in window) {
-          window.speechSynthesis.cancel();
-          const isHindi = aiVoiceLanguage === 'hi';
-          const spokenText = isHindi
-            ? "कृपया मोबाइल को न हिलाएं। सही स्कैन के लिए इसे स्थिर रखें।"
-            : "Do not shake mobile. Stay stable to get an accurate answer.";
-          
-          const utterance = new SpeechSynthesisUtterance(spokenText);
-          utterance.lang = isHindi ? 'hi-IN' : 'en-US';
-          
-          const voices = window.speechSynthesis.getVoices();
-          let selectedVoice = null;
-          
-          if (isHindi) {
-            selectedVoice = voices.find(v => {
-              const lang = v.lang.toLowerCase();
-              const name = v.name.toLowerCase();
-              return (lang.startsWith('hi') || name.includes('hindi') || name.includes('india')) && (
-                name.includes('female') ||
-                name.includes('google') ||
-                name.includes('swara') ||
-                name.includes('kalpana') ||
-                (v as any).gender === 'female'
-              );
-            }) || voices.find(v => {
-              const lang = v.lang.toLowerCase();
-              const name = v.name.toLowerCase();
-              return lang.startsWith('hi') || name.includes('hindi') || name.includes('india');
-            });
-          } else {
-            selectedVoice = voices.find(v => {
-              const lang = v.lang.toLowerCase();
-              const name = v.name.toLowerCase();
-              return lang.startsWith('en') && (
-                name.includes('female') || 
-                name.includes('google us english') || 
-                name.includes('zira') || 
-                name.includes('samantha') || 
-                name.includes('victoria') || 
-                name.includes('hazel') ||
-                name.includes('natural') ||
-                name.includes('karen') ||
-                name.includes('moira') ||
-                name.includes('tessa') ||
-                name.includes('siri') ||
-                (v as any).gender === 'female'
-              );
-            });
-          }
-          
-          if (selectedVoice) {
-            utterance.voice = selectedVoice;
-          }
-          utterance.rate = isHindi ? 1.05 : 1.0;
-          utterance.pitch = isHindi ? 1.1 : 1.25;
-          window.speechSynthesis.speak(utterance);
-        }
-      }
-      return;
-    }
-
-    // Camera mode: capture image from video element and scan with Gemini 3.5 Flash
+    // Camera mode: capture high-quality image from video element and scan with Gemini
     if (liveVideoRef.current) {
       try {
         const canvas = document.createElement('canvas');
-        const videoWidth = liveVideoRef.current.videoWidth || 640;
-        const videoHeight = liveVideoRef.current.videoHeight || 480;
-        const maxWidth = 640;
+        const videoWidth = liveVideoRef.current.videoWidth || 1280;
+        const videoHeight = liveVideoRef.current.videoHeight || 720;
+        const maxWidth = 720;
         let width = videoWidth;
         let height = videoHeight;
         if (width > maxWidth || height > maxWidth) {
@@ -1558,8 +1516,8 @@ export default function App() {
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(liveVideoRef.current, 0, 0, width, height);
-          const base64 = canvas.toDataURL('image/jpeg', 0.6);
-          // Call our live analyzer (which invokes Gemini 3.5 Flash)
+          const base64 = canvas.toDataURL('image/jpeg', 0.65);
+          // Call our live analyzer (which invokes Gemini 2.5 Flash)
           const result = await analyzeLiveFoodFrame(base64, 'image/jpeg');
           
           if (isValidFood(result)) {
@@ -1598,6 +1556,7 @@ export default function App() {
       }
     }
   };
+  handleLiveScanRef.current = handleLiveScan;
 
 
   const handleSaveLiveScannedFood = async () => {
@@ -1646,6 +1605,7 @@ export default function App() {
     
     showToast(`Successfully logged ${newLog.food_name}! 🎉`, 'success');
   };
+  handleSaveLiveScannedFoodRef.current = handleSaveLiveScannedFood;
 
   const handleLogout = async () => {
     try {
@@ -2135,6 +2095,7 @@ export default function App() {
       }
     }
   };
+  capturePhotoRef.current = capturePhoto;
 
   // Handle File Upload Scanner
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -6400,33 +6361,35 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
                         </span>
                       </div>
 
-                      {/* Shaking Warning Indicator */}
-                      {isShaking && (
-                        <div style={{
-                          position: 'absolute',
-                          top: '64px',
-                          left: '50%',
-                          transform: 'translateX(-50%)',
-                          background: 'rgba(239, 68, 68, 0.92)',
-                          backdropFilter: 'blur(8px)',
-                          border: '1px solid rgba(255,255,255,0.2)',
-                          padding: '8px 16px',
-                          borderRadius: '16px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '8px',
-                          zIndex: 30,
-                          boxShadow: '0 8px 24px rgba(220, 38, 38, 0.4)',
-                          width: '80%',
-                          justifyContent: 'center',
-                          color: '#fff',
-                          animation: 'pulse 1s infinite'
-                        }}>
-                          <span style={{ fontSize: '12px', fontWeight: 800, textAlign: 'center' }}>
-                            ⚠️ Hold Stable (Shaking Detected)
-                          </span>
-                        </div>
-                      )}
+                      {/* Shake-to-Scan Readiness HUD Banner */}
+                      <div style={{
+                        position: 'absolute',
+                        top: '64px',
+                        left: '50%',
+                        transform: 'translateX(-50%)',
+                        background: shakeDetectedVisual
+                          ? 'linear-gradient(135deg, rgba(16,185,129,0.95), rgba(5,150,105,0.95))'
+                          : 'rgba(15, 23, 42, 0.85)',
+                        backdropFilter: 'blur(10px)',
+                        border: shakeDetectedVisual ? '1px solid #34d399' : '1px solid rgba(255,255,255,0.15)',
+                        padding: '6px 16px',
+                        borderRadius: '20px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        zIndex: 30,
+                        boxShadow: shakeDetectedVisual ? '0 0 20px rgba(16,185,129,0.6)' : '0 4px 16px rgba(0,0,0,0.4)',
+                        transition: 'all 0.25s ease',
+                        color: '#fff',
+                        whiteSpace: 'nowrap'
+                      }}>
+                        <span style={{ fontSize: '13px' }}>{shakeDetectedVisual ? '⚡' : '📱'}</span>
+                        <span style={{ fontSize: '11px', fontWeight: 800, letterSpacing: '0.2px' }}>
+                          {shakeDetectedVisual
+                            ? 'Shake Detected! Scanning...'
+                            : (liveScanDetectedFood ? 'Ready: Shake to Log Meal ✦' : 'Shake phone to scan ✦')}
+                        </span>
+                      </div>
 
                       {/* Laser scan lines when scanning */}
                       {isAnalyzingFrame && (
@@ -6496,7 +6459,7 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
                           }}
                         >
                           <Sparkles size={16} />
-                          <span>Scan Food Frame</span>
+                          <span>Scan Food (or Shake Phone)</span>
                         </button>
                       )}
 
@@ -6511,7 +6474,7 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
                         textTransform: 'uppercase',
                         letterSpacing: '0.5px'
                       }}>
-                        Powered by Gemini 3.5 Flash
+                        Powered by Gemini 2.5 Flash
                       </div>
                     </>
                   ) : (
@@ -6821,6 +6784,24 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
                         <div style={{ height: '100%', background: 'linear-gradient(90deg, #10b981, #34d399)', width: `${Math.min(100, (liveScanDetectedFood.fats / 40) * 100)}%`, borderRadius: '3px' }} />
                       </div>
                     </div>
+                  </div>
+
+                  {/* Shake confirmation tip */}
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    padding: '8px 14px',
+                    background: 'rgba(59, 130, 246, 0.12)',
+                    border: '1px dashed rgba(59, 130, 246, 0.4)',
+                    borderRadius: '14px',
+                    fontSize: '11px',
+                    color: '#93c5fd',
+                    fontWeight: 700
+                  }}>
+                    <span>📱</span>
+                    <span>Ready! Shake phone to log meal to diary (or tap below)</span>
                   </div>
 
                   {/* Log button and Clear button */}
@@ -7685,6 +7666,31 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
                 <div style={{ position: 'absolute', bottom: '-10px', left: '-10px', width: '20px', height: '20px', borderBottom: '4px solid #fff', borderLeft: '4px solid #fff' }} />
                 <div style={{ position: 'absolute', bottom: '-10px', right: '-10px', width: '20px', height: '20px', borderBottom: '4px solid #fff', borderRight: '4px solid #fff' }} />
               </div>
+
+              {/* Shake indicator badge in modal camera */}
+              <div style={{
+                position: 'absolute',
+                top: '20px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                background: shakeDetectedVisual ? 'rgba(16, 185, 129, 0.95)' : 'rgba(15, 23, 42, 0.8)',
+                backdropFilter: 'blur(8px)',
+                border: shakeDetectedVisual ? '1px solid #34d399' : '1px solid rgba(255,255,255,0.15)',
+                padding: '6px 14px',
+                borderRadius: '20px',
+                color: '#fff',
+                fontSize: '11px',
+                fontWeight: 700,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                zIndex: 20,
+                transition: 'all 0.2s ease',
+                boxShadow: shakeDetectedVisual ? '0 0 16px rgba(16, 185, 129, 0.6)' : 'none'
+              }}>
+                <span>{shakeDetectedVisual ? '⚡' : '📱'}</span>
+                <span>{shakeDetectedVisual ? 'Shake Detected! Capturing...' : 'Shake phone to snap photo'}</span>
+              </div>
             </>
           )}
         </div>
@@ -7728,7 +7734,7 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
             {cameraPermissionStatus !== 'denied' ? <div style={{ width: '48px' }} /> : null}
           </div>
 
-          <p style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>Center food inside frame and snap, or upload a photo.</p>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>Center food inside frame and snap, or shake phone to capture.</p>
         </div>
       </div>
     )

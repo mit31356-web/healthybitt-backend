@@ -161,32 +161,89 @@ STRICT ACCURACY RULES:
 - List every component as a separate ingredient (include oils, dressings, and side sauces).
 - Use standard USDA nutrition values as your reference.`;
 
-const IMAGE_ANALYSIS_PROMPT = `Expert dietitian and food vision AI.
-TASK: Analyze the food photo accurately and swiftly.
-1. Identify all food items.
-2. Estimate standard portion size and macronutrients (USDA reference).
-3. If NO food is visible (e.g. wall, floor, furniture, screen, person, blank), return foodName: "No food detected", calories: 0, protein: 0, carbs: 0, fats: 0, healthScore: 0, ingredients: [].
+const IMAGE_ANALYSIS_PROMPT = `You are an elite clinical dietitian and AI food vision specialist.
+GOAL: Analyze the food photo with maximum precision, portion estimation, and macronutrient accuracy.
 
-OUTPUT FORMAT: Return ONLY valid JSON starting with { immediately (no code fences, no markdown):
+DIETARY & ACCURACY GUIDELINES:
+1. FOOD IDENTIFICATION: Accurately identify dishes across all cuisines (Indian: Biryani, Dal Makhani, Paneer Tikka, Roti/Chapati, Dosa, Idli, Poha, Curries; Western: Grilled Chicken Salad, Avocado Toast, Pasta, Burger, Salmon Bowl, Oatmeal; Asian: Ramen, Fried Rice, Stir Fry, Sushi, Noodles; etc.).
+2. PORTION SCALE ESTIMATION: Reference visible dinner plates (~25cm diameter), standard bowls (~250ml), cutlery, or hands to realistically estimate portions in grams (e.g. 1 Roti ≈ 35g, 1 cup cooked rice ≈ 150g, palm-sized chicken ≈ 150g). Account for hidden cooking oils/ghee/butter (typically 5-15g = 45-135 kcal).
+3. CALORIE & MACRO FORMULA (STRICT): Total calories MUST equal (protein * 4) + (carbs * 4) + (fats * 9) within +/- 5 kcal.
+4. INGREDIENTS BREAKDOWN: List 2 to 5 primary components with estimated weights in grams (e.g. "Basmati Rice (150g)", "Paneer in Tomato Gravy (130g)").
+5. HEALTH SCORE: 85-100 (whole foods, high fiber, lean protein, veggies), 60-84 (balanced home-style meals), 40-59 (moderate oil/refined carbs), 1-39 (deep-fried, sugary snacks, ultra-processed junk).
+6. NON-FOOD REJECTION: If image shows screens, keyboards, desks, walls, people, hands without food, or empty plates, return:
+foodName: "No food detected", calories: 0, protein: 0, carbs: 0, fats: 0, healthScore: 0, ingredients: [].
+
+OUTPUT FORMAT: Return ONLY valid JSON starting with { immediately (no code fences, no extra text):
 {
   "foodName": "Specific meal name (< 5 words)",
   "calories": <integer>,
-  "protein": <integer>,
-  "carbs": <integer>,
-  "fats": <integer>,
+  "protein": <integer grams>,
+  "carbs": <integer grams>,
+  "fats": <integer grams>,
   "healthScore": <1-100 integer>,
   "ingredients": [
     {
-      "name": "Ingredient with estimated weight (e.g. Rice 150g)",
+      "name": "Ingredient with weight (e.g. Steamed Rice 150g)",
       "calories": <integer>,
       "protein": <integer>,
       "carbs": <integer>,
       "fats": <integer>
     }
   ]
-}
+}`;
 
-SPEED & ACCURACY: Max 4 ingredients. Total calories must match (protein * 4) + (carbs * 4) + (fats * 9) within +/- 5 kcal.`;
+// ─── Macro & Score Normalizer ────────────────────────────────────────────────
+export function normalizeFoodResult(result: FoodAnalysisResult): FoodAnalysisResult {
+  if (!result || !result.foodName) return result;
+
+  const isNonFood = 
+    result.foodName.toLowerCase().includes('no food') ||
+    result.foodName.toLowerCase().includes('not food') ||
+    result.foodName.toLowerCase().includes('unable to') ||
+    result.foodName.toLowerCase().includes('unknown');
+
+  if (isNonFood) {
+    return {
+      foodName: "No food detected",
+      calories: 0,
+      protein: 0,
+      carbs: 0,
+      fats: 0,
+      healthScore: 0,
+      ingredients: []
+    };
+  }
+
+  const protein = Math.max(0, Math.round(result.protein || 0));
+  const carbs = Math.max(0, Math.round(result.carbs || 0));
+  const fats = Math.max(0, Math.round(result.fats || 0));
+
+  const macroCals = (protein * 4) + (carbs * 4) + (fats * 9);
+  let calories = Math.max(0, Math.round(result.calories || 0));
+
+  // If calories diverges from macro sum by > 15 kcal, adjust to exact macro calories
+  if (calories === 0 || Math.abs(calories - macroCals) > 15) {
+    calories = macroCals;
+  }
+
+  const healthScore = Math.max(1, Math.min(100, Math.round(result.healthScore || 50)));
+
+  return {
+    ...result,
+    calories,
+    protein,
+    carbs,
+    fats,
+    healthScore,
+    ingredients: Array.isArray(result.ingredients) ? result.ingredients.map(ing => ({
+      name: ing.name || 'Component',
+      calories: Math.max(0, Math.round(ing.calories || 0)),
+      protein: Math.max(0, Math.round(ing.protein || 0)),
+      carbs: Math.max(0, Math.round(ing.carbs || 0)),
+      fats: Math.max(0, Math.round(ing.fats || 0))
+    })) : []
+  };
+}
 
 // ─── Supabase endpoint ────────────────────────────────────────────────────────
 
@@ -226,7 +283,8 @@ export async function analyzeFoodText(text: string, _apiKey?: string): Promise<F
     const raw = data.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!raw) throw new Error('Empty response from Gemini');
 
-    return JSON.parse(extractJson(raw)) as FoodAnalysisResult;
+    const parsed = JSON.parse(extractJson(raw)) as FoodAnalysisResult;
+    return normalizeFoodResult(parsed);
   } catch (err: any) {
     if (err.message === 'quota_exceeded') throw err; // propagate to UI
     console.warn('[analyzeFoodText] Falling back to mock:', err);
@@ -293,7 +351,7 @@ export async function analyzeFoodImage(
       throw new Error('Parsed result is incomplete');
     }
 
-    return parsed;
+    return normalizeFoodResult(parsed);
   } catch (err: any) {
     console.error('[analyzeFoodImage] Error:', err.message);
     throw err;
@@ -417,7 +475,7 @@ export async function analyzeLiveFoodFrame(
       throw new Error('Parsed result is incomplete');
     }
 
-    return parsed;
+    return normalizeFoodResult(parsed);
   } catch (err: any) {
     console.error('[analyzeLiveFoodFrame] Error:', err.message);
     throw err;

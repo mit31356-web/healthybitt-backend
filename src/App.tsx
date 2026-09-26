@@ -2362,21 +2362,31 @@ export default function App() {
 RULE: Always respond in a very friendly, supportive, and warm friend tone, but KEEP your response short and sweet (under 2-3 sentences max, under 45 words). NEVER use bullet points, lists, or headers. Speak like a real human friend in a quick chat app message. If the user speaks or queries in Hindi or Hinglish (Hindi written in English alphabet), you MUST respond in friendly Hindi or Hinglish, adhering strictly to the same formatting and length rules.`;
 
       try {
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'chat',
-            payload: {
-              model: 'gemini-2.5-flash',
-              system_instruction: { parts: [{ text: systemInstruction }] },
-              contents: historyContents
+        let chatData: any = null;
+        for (const chatModel of ['gemini-2.5-flash-lite', 'gemini-3.8-flash', 'gemini-2.5-flash']) {
+          try {
+            const response = await fetch(endpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: 'chat',
+                payload: {
+                  model: chatModel,
+                  system_instruction: { parts: [{ text: systemInstruction }] },
+                  contents: historyContents
+                }
+              })
+            });
+            if (response.ok) {
+              const data = await response.json();
+              if (data.candidates?.[0]?.content?.parts?.[0]?.text) {
+                chatData = data;
+                break;
+              }
             }
-          })
-        });
-        if (!response.ok) throw new Error('proxy_error');
-        const data = await response.json();
-        aiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+          } catch (_) {}
+        }
+        aiResponse = chatData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
       } catch {
         // Proxy unavailable — use smart offline fallback
       }
@@ -8543,9 +8553,9 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
           <span>⚠️</span>
           <span>
             {scanError === 'quota'
-              ? 'API Key quota exceeded. Try again later.'
+              ? 'Scan limit reached. Please wait a moment or upgrade to Pro.'
               : scanError === 'failed'
-                ? 'Failed to analyze food. Please check your connection.'
+                ? 'Unable to analyze food clearly. Please ensure food is centered in good lighting.'
                 : scanError}
           </span>
         </div>

@@ -581,13 +581,12 @@ export default function App() {
     setDatesList(dates);
   }, []);
 
-  // Splash Timer Effect — returning users go to login (step 14), new users go to onboarding (step 1)
+  // Splash Timer Effect — always transition to Step 1 (Get Started) so user fills all options first
   useEffect(() => {
     if (onboardingStep === 0) {
       const timer = setTimeout(() => {
-        const completed = localStorage.getItem('hb_onboarding_completed');
-        setOnboardingStep(completed === 'true' ? 14 : 1);
-      }, 2500);
+        setOnboardingStep(1);
+      }, 2000);
       return () => clearTimeout(timer);
     }
   }, [onboardingStep]);

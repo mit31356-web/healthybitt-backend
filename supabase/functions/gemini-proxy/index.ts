@@ -87,7 +87,10 @@ serve(async (req) => {
         contents: payload.contents,
         generationConfig: { temperature: 0.8, topP: 0.95, maxOutputTokens: 1024 }
       };
-
+      const sysInst = payload.systemInstruction || payload.system_instruction;
+      if (sysInst) {
+        geminiPayload.systemInstruction = sysInst;
+      }
     } else {
       return new Response(JSON.stringify({ error: `Unknown action: ${action}` }), {
         status: 400,
@@ -105,11 +108,11 @@ serve(async (req) => {
       
       let modelsToTry = [targetModel];
       if (targetModel === "gemini-3.1-flash-lite") {
-        modelsToTry = ["gemini-3.1-flash-lite", "gemini-1.5-flash-8b"];
+        modelsToTry = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
       } else if (targetModel === "gemini-3-flash-live") {
-        modelsToTry = ["gemini-3-flash-live", "gemini-1.5-flash"];
+        modelsToTry = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
       } else if (targetModel === "gemma-4-31b") {
-        modelsToTry = ["gemma-4-31b", "gemma-4-31b-it", "gemma-2-27b-it"];
+        modelsToTry = ["gemini-2.5-pro", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
       }
 
       for (const apiModel of modelsToTry) {

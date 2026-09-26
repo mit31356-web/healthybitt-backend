@@ -668,5 +668,58 @@ body {
   border-radius: 50%;
 }
 
+/* Row goes to top animation */
+@keyframes rowGoToTop {
+  0% {
+    opacity: 0;
+    transform: translateY(35px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-row-top {
+  animation: rowGoToTop 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Toast popup animation */
+@keyframes toastPopUp {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 20px) scale(0.95);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+.animate-toast {
+  animation: toastPopUp 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
+.toast-notification {
+  position: absolute;
+  bottom: 100px;
+  left: 50%;
+  padding: 12px 20px;
+  border-radius: 16px;
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.25);
+  z-index: 10000;
+  pointer-events: none;
+  min-width: 280px;
+  max-width: 90%;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+
 
 

@@ -129,7 +129,7 @@ function generateRandomMock(query: string): FoodAnalysisResult {
 // ─── Prompts ─────────────────────────────────────────────────────────────────
 
 const TEXT_ANALYSIS_PROMPT = `You are an expert dietitian and nutritionist AI.
-Analyze the food item described below and return a detailed nutritional breakdown.
+Analyze the food item described below and return a detailed, highly accurate nutritional breakdown.
 Estimate realistic portion sizes (standard restaurant/home serving) if not specified.
 
 Return ONLY a raw JSON object — no markdown, no explanation, no code fences:
@@ -151,19 +151,23 @@ Return ONLY a raw JSON object — no markdown, no explanation, no code fences:
   ]
 }
 
-Rules:
-- Ingredient calories must sum close to total calories
-- healthScore: 80-100 = very healthy, 60-79 = decent, 40-59 = moderate, 0-39 = unhealthy
-- List every visible/described component as a separate ingredient
-- Use standard USDA nutrition values as your reference`;
+SPEED REQUIREMENT: Keep JSON compact and process as fast as possible. Keep the foodName short and simple (under 5 words). Do not list more than 5 ingredients.
+
+STRICT ACCURACY RULES:
+- CALORIE-MACRO FORMULA: Total calories MUST equal (protein * 4) + (carbs * 4) + (fats * 9) within +/- 5 kcal. Do not violate this formula.
+- INGREDIENT CONSISTENCY: Every ingredient's calories must also equal (protein * 4) + (carbs * 4) + (fats * 9) within +/- 5 kcal.
+- The sum of ingredient calories/macros must equal the total calories/macros within a 5% margin.
+- healthScore: 80-100 = very healthy, 60-79 = decent, 40-59 = moderate, 0-39 = unhealthy.
+- List every component as a separate ingredient (include oils, dressings, and side sauces).
+- Use standard USDA nutrition values as your reference.`;
 
 const IMAGE_ANALYSIS_PROMPT = `You are an expert dietitian and food recognition AI with advanced computer vision capability.
 
 TASK: Carefully examine the food photo provided and:
-1. IDENTIFY every food item and component visible in the image
-2. ESTIMATE portion sizes based on visual cues (plate diameter ~25cm as reference, depth of food, density)
-3. CALCULATE accurate macronutrients using standard USDA nutritional data
-4. LIST each component as a separate ingredient with its own breakdown
+1. IDENTIFY every food item and component visible in the image.
+2. ESTIMATE portion sizes based on visual cues (plate diameter ~25cm as reference, depth of food, density).
+3. CALCULATE accurate macronutrients using standard USDA nutritional data.
+4. LIST each component as a separate ingredient with its own breakdown.
 
 Be SPECIFIC — do not give vague answers. If you see rice, estimate "Steamed White Rice (200g)". If you see chicken, identify the cooking method and estimate weight.
 
@@ -186,12 +190,17 @@ Return ONLY a raw JSON object — no markdown, no explanation, no preamble, no c
   ]
 }
 
-STRICT RULES:
-- Ingredient calories MUST sum to within 10% of total calories
-- Identify cooking method (fried, grilled, steamed, etc.) — it affects calories significantly
-- If the image is unclear, make your BEST educated guess — never return empty values
-- healthScore: 80-100 = whole foods/very healthy, 60-79 = balanced, 40-59 = moderate, 0-39 = high fat/sugar/processed
-- Always include ALL visible components (sides, sauces, drinks, garnishes)`;
+SPEED REQUIREMENT: Keep JSON compact and process as fast as possible. Keep the foodName short and simple (under 5 words). Do not list more than 5 ingredients.
+
+STRICT ACCURACY RULES:
+- CALORIE-MACRO FORMULA: Total calories MUST equal (protein * 4) + (carbs * 4) + (fats * 9) within +/- 5 kcal. Do not violate this formula.
+- INGREDIENT CONSISTENCY: Every ingredient's calories must also equal (protein * 4) + (carbs * 4) + (fats * 9) within +/- 5 kcal.
+- The sum of ingredient calories/macros must equal the total calories/macros within a 5% margin.
+- Identify cooking method (fried, grilled, steamed, etc.) — it affects calories significantly. Estimate hidden preparation fats (e.g. Butter/Oil used to sauté).
+- If the image is blurry, contains partially eaten food, or only has a single ingredient, make your best educated guess.
+- If there is NO food item visible in the image (such as if the camera is pointing at a wall, floor, furniture, laptop screen, keyboard, ceiling, person, or the view is blank/blocked), you MUST set "foodName" to "No food detected", and set calories, protein, carbs, fats, and healthScore to 0. Do NOT hallucinate or guess food in this case.
+- healthScore: 80-100 = whole foods/very healthy, 60-79 = balanced, 40-59 = moderate, 0-39 = high fat/sugar/processed.
+- Always include ALL visible components (sides, sauces, drinks, garnishes).`;
 
 // ─── Supabase endpoint ────────────────────────────────────────────────────────
 
@@ -214,7 +223,7 @@ export async function analyzeFoodText(text: string, _apiKey?: string): Promise<F
       body: JSON.stringify({
         action: 'analyze_text',
         payload: {
-          model: 'gemini-3.1-flash-lite',
+          model: 'gemma-4-31b',
           prompt: `${TEXT_ANALYSIS_PROMPT}\n\nFood to analyze: "${text}"`
         }
       })
@@ -301,7 +310,7 @@ export async function analyzeFoodImage(
     return parsed;
   } catch (err: any) {
     console.error('[analyzeFoodImage] Error:', err.message);
-    throw err; // always propagate so App.tsx handles it properly
+    throw err;
   }
 }
 
@@ -344,7 +353,7 @@ The four meals' calories must sum close to ${targetCalories}. Be specific with i
     const response = await fetch(PROXY_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'generate_diet', payload: { prompt } })
+      body: JSON.stringify({ action: 'generate_diet', payload: { model: 'gemma-4-31b', prompt } })
     });
 
     if (!response.ok) throw new Error(`Proxy ${response.status}`);
@@ -425,6 +434,6 @@ export async function analyzeLiveFoodFrame(
     return parsed;
   } catch (err: any) {
     console.error('[analyzeLiveFoodFrame] Error:', err.message);
-    throw err; // always propagate so App.tsx handles it properly
+    throw err;
   }
 }

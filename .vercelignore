@@ -1,0 +1,7 @@
+android
+build-tools
+healthybit
+supabase
+*.apk
+*.ps1
+*.log

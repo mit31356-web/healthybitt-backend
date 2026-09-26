@@ -7,5 +7,11 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
+    watch: {
+      ignored: ['**/android/**', '**/healthybit/**']
+    }
   },
+  optimizeDeps: {
+    exclude: ['healthybit', 'android']
+  }
 })

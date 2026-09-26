@@ -5,7 +5,8 @@ import {
   Settings,
   Plus,
   Camera,
-  Keyboard,
+  CameraOff,
+  Image,
   ChevronRight,
   Trash2,
   LogOut,
@@ -18,18 +19,66 @@ import {
   X,
   Send,
   Flame,
-  Info,
   Handshake,
   Check,
-  Volume2
+  Volume2,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
+import { useUser, useAuth, useSession, useSignIn, useSignUp } from '@clerk/clerk-react';
 import {
   analyzeFoodText,
   analyzeFoodImage,
   analyzeLiveFoodFrame
 } from './gemini';
 import type { FoodAnalysisResult } from './gemini';
+
+function clerkIdToUuid(clerkId: string): string {
+  if (!clerkId) return '';
+  let h1 = 0xdeadbeef, h2 = 0x41c64e6d, h3 = 0x9e3779b9, h4 = 0x1337c0de;
+  for (let i = 0; i < clerkId.length; i++) {
+    const c = clerkId.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 2654435761);
+    h2 = Math.imul(h2 ^ c, 1597334677);
+    h3 = Math.imul(h3 ^ c, 3812030807);
+    h4 = Math.imul(h4 ^ c, 2182413521);
+  }
+  const hex = (val: number) => (val >>> 0).toString(16).padStart(8, '0');
+  const part1 = hex(h1);
+  const part2 = hex(h2);
+  const part3 = hex(h3);
+  const part4 = hex(h4);
+  
+  const s1 = part1;
+  const s2 = part2.substring(0, 4);
+  const s3 = '4' + part2.substring(4, 7);
+  const s4 = 'a' + part3.substring(0, 3);
+  const s5 = part3.substring(3, 8) + part4.substring(0, 7);
+  return `${s1}-${s2}-${s3}-${s4}-${s5}`;
+}
+
+
+const GoogleIcon = ({ size = 20, style }: { size?: number; style?: React.CSSProperties }) => (
+  <svg style={{ width: `${size}px`, height: `${size}px`, ...style }} viewBox="0 0 24 24">
+    <path
+      fill="#4285F4"
+      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+    />
+    <path
+      fill="#34A853"
+      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+    />
+    <path
+      fill="#FBBC05"
+      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+    />
+    <path
+      fill="#EA4335"
+      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+    />
+  </svg>
+);
 
 // Define Interface Types
 interface Profile {
@@ -46,6 +95,11 @@ interface Profile {
   activity_level: string;
   goal_type: string;
   avatar_url?: string;
+  phone?: string;
+  is_premium?: boolean;
+  scans_used?: number;
+  premium_until?: string | null;
+  current_session_id?: string | null;
 }
 
 interface FoodLog {
@@ -55,7 +109,7 @@ interface FoodLog {
   protein_g: number;
   carbs_g: number;
   fats_g: number;
-  image_url?: string;
+  image_url?: string | null;
   ingredients?: any[];
   health_score?: number;
   logged_at: string; // ISO String
@@ -105,21 +159,33 @@ const years = Array.from({ length: 100 }, (_, i) => 2026 - i);
 
 
 export default function App() {
+  const { isLoaded: isUserLoaded, isSignedIn, user: clerkUser } = useUser();
+  const { session } = useSession();
+  const { signOut } = useAuth();
+  const { isLoaded: isSignInLoaded, signIn, setActive: setSignInActive } = useSignIn();
+  const { isLoaded: isSignUpLoaded, signUp, setActive: setSignUpActive } = useSignUp();
+
   // Navigation & View States
   const [activeTab, setActiveTab] = useState<'home' | 'progress' | 'diet' | 'settings'>('home');
+  const [aiVoiceLanguage, setAiVoiceLanguage] = useState<'en' | 'hi'>(() => {
+    return (localStorage.getItem('hb_ai_voice_lang') as 'en' | 'hi') || 'en';
+  });
+  const handleVoiceLangChange = (lang: 'en' | 'hi') => {
+    setAiVoiceLanguage(lang);
+    localStorage.setItem('hb_ai_voice_lang', lang);
+  };
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [showCameraScanner, setShowCameraScanner] = useState(false);
   const [showTextDescriber, setShowTextDescriber] = useState(false);
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [showAICoach, setShowAICoach] = useState(false);
-  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'demo'>('demo');
+  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'forgot'>('login');
+  const [showPassword, setShowPassword] = useState(false);
+  const [, setResetSent] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
   // Onboarding States
-  const [onboardingStep, setOnboardingStep] = useState<number>(() => {
-    const completed = localStorage.getItem('hb_onboarding_completed');
-    return completed === 'true' ? -1 : 0;
-  });
+  const [onboardingStep, setOnboardingStep] = useState<number>(0);
   const [onboardingSex, setOnboardingSex] = useState<'male' | 'female' | 'other' | null>(null);
   const [onboardingWorkouts, setOnboardingWorkouts] = useState<'0-2' | '3-5' | '6+' | null>(null);
   const onboardingAccomplish: string[] = [];
@@ -156,6 +222,7 @@ export default function App() {
   // Live Food Scan states
   const [liveScanDetectedFood, setLiveScanDetectedFood] = useState<FoodAnalysisResult | null>(null);
   const [isAnalyzingFrame, setIsAnalyzingFrame] = useState(false);
+  const [isShaking, setIsShaking] = useState(false);
   const liveVideoRef = useRef<HTMLVideoElement>(null);
 
   // Wheel picker scroll refs
@@ -176,6 +243,90 @@ export default function App() {
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   const [authError, setAuthError] = useState('');
+  const [loadingType, setLoadingType] = useState<'email' | 'google' | null>(null);
+  const [sessionConflict, setSessionConflict] = useState(false);
+  const [verifyingEmail, setVerifyingEmail] = useState(false);
+  const [verificationCode, setVerificationCode] = useState('');
+  const [verifyingReset, setVerifyingReset] = useState(false);
+  const [resetCode, setResetCode] = useState('');
+  const [isInputFocused, setIsInputFocused] = useState(false);
+  const [otpTimer, setOtpTimer] = useState(0); // countdown seconds remaining
+
+  // OTP timer countdown effect — starts at 60 when verifyingEmail becomes true
+  useEffect(() => {
+    if (verifyingEmail) {
+      setOtpTimer(60);
+    }
+  }, [verifyingEmail]);
+
+  useEffect(() => {
+    if (otpTimer <= 0) return;
+    const t = setTimeout(() => setOtpTimer(prev => prev - 1), 1000);
+    return () => clearTimeout(t);
+  }, [otpTimer]);
+
+  const handleResendOtp = async () => {
+    if (otpTimer > 0) return;
+    setAuthError('');
+    setVerificationCode('');
+    setIsLoading(true);
+    try {
+      if (authMode === 'login') {
+        if (!signIn) return;
+        const { supportedFirstFactors } = await signIn.create({ identifier: email });
+        const emailFactor = supportedFirstFactors?.find((f: any) => f.strategy === 'email_code') as any;
+        if (emailFactor) {
+          await signIn.prepareFirstFactor({ strategy: 'email_code', emailAddressId: emailFactor.emailAddressId });
+          setOtpTimer(60);
+        }
+      } else {
+        if (!signUp) return;
+        await signUp.prepareEmailAddressVerification({ strategy: 'email_code' });
+        setOtpTimer(60);
+      }
+    } catch (err: any) {
+      const msg = err.errors?.[0]?.longMessage || err.errors?.[0]?.message || err.message || 'Failed to resend code.';
+      setAuthError(msg);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    if (authMode === 'login') {
+      if (!isSignInLoaded || !signIn) return;
+      try {
+        setLoadingType('google');
+        setIsLoading(true);
+        await signIn.authenticateWithRedirect({
+          strategy: 'oauth_google',
+          redirectUrl: window.location.origin,
+          redirectUrlComplete: window.location.origin
+        });
+      } catch (err: any) {
+        console.error("Google login error:", err);
+        setAuthError(err.errors?.[0]?.message || err.message || "Failed to sign in with Google.");
+        setLoadingType(null);
+        setIsLoading(false);
+      }
+    } else {
+      if (!isSignUpLoaded || !signUp) return;
+      try {
+        setLoadingType('google');
+        setIsLoading(true);
+        await signUp.authenticateWithRedirect({
+          strategy: 'oauth_google',
+          redirectUrl: window.location.origin,
+          redirectUrlComplete: window.location.origin
+        });
+      } catch (err: any) {
+        console.error("Google signup error:", err);
+        setAuthError(err.errors?.[0]?.message || err.message || "Failed to sign up with Google.");
+        setLoadingType(null);
+        setIsLoading(false);
+      }
+    }
+  };
 
   const audioCtxRef = useRef<AudioContext | null>(null);
 
@@ -232,8 +383,8 @@ export default function App() {
 
   // Configured Keys & Profiles
   const [profile, setProfile] = useState<Profile>({
-    email: 'guest@healthybit.app',
-    name: 'Guest User',
+    email: '',
+    name: '',
     daily_calorie_goal: 2200,
     protein_goal_g: 130,
     carbs_goal_g: 220,
@@ -244,6 +395,12 @@ export default function App() {
     activity_level: 'moderate',
     goal_type: 'lose'
   });
+  const [isProfileLoaded, setIsProfileLoaded] = useState(false);
+
+  // Camera Permission State
+  const [cameraPermissionStatus, setCameraPermissionStatus] = useState<'prompt' | 'granted' | 'denied' | 'unsupported'>('prompt');
+  const [isCameraInitializing, setIsCameraInitializing] = useState(false);
+  const [cameraTrigger, setCameraTrigger] = useState(0);
 
   // Local draft states for settings to avoid getting stuck on numeric inputs
   const [settingsName, setSettingsName] = useState('');
@@ -251,7 +408,20 @@ export default function App() {
   const [settingsWeight, setSettingsWeight] = useState('');
   const [settingsCalorieGoal, setSettingsCalorieGoal] = useState('');
   const [settingsTargetWeight, setSettingsTargetWeight] = useState('');
+  const [settingsGoalType, setSettingsGoalType] = useState<'lose' | 'maintain' | 'gain'>('maintain');
+  const [settingsActivityLevel, setSettingsActivityLevel] = useState<string>('moderate');
+  const [settingsProteinGoal, setSettingsProteinGoal] = useState('');
+  const [settingsCarbsGoal, setSettingsCarbsGoal] = useState('');
+  const [settingsFatsGoal, setSettingsFatsGoal] = useState('');
   const [settingsSaveSuccess, setSettingsSaveSuccess] = useState(false);
+
+  // Settings Change Password States
+  const [showSettingsChangePassword, setShowSettingsChangePassword] = useState(false);
+  const [settingsNewPassword, setSettingsNewPassword] = useState('');
+  const [settingsNewPasswordConfirm, setSettingsNewPasswordConfirm] = useState('');
+  const [settingsPasswordError, setSettingsPasswordError] = useState('');
+  const [settingsPasswordSuccess, setSettingsPasswordSuccess] = useState(false);
+  const [showSettingsPassword, setShowSettingsPassword] = useState(false);
 
   // Sync settings inputs when the global profile loads/updates
   useEffect(() => {
@@ -261,6 +431,11 @@ export default function App() {
       setSettingsWeight(profile.weight_kg ? String(profile.weight_kg) : '');
       setSettingsCalorieGoal(profile.daily_calorie_goal ? String(profile.daily_calorie_goal) : '');
       setSettingsTargetWeight(profile.target_weight_kg ? String(profile.target_weight_kg) : '');
+      setSettingsGoalType((profile.goal_type as 'lose' | 'maintain' | 'gain') || 'maintain');
+      setSettingsActivityLevel(profile.activity_level || 'moderate');
+      setSettingsProteinGoal(profile.protein_goal_g ? String(profile.protein_goal_g) : '130');
+      setSettingsCarbsGoal(profile.carbs_goal_g ? String(profile.carbs_goal_g) : '220');
+      setSettingsFatsGoal(profile.fats_goal_g ? String(profile.fats_goal_g) : '70');
     }
   }, [profile]);
 
@@ -278,6 +453,15 @@ export default function App() {
   const [currentAnalysis, setCurrentAnalysis] = useState<FoodAnalysisResult | null>(null);
   const [breakdownQuantity, setBreakdownQuantity] = useState(1);
 
+  // Paywall / Subscription States
+  const [showPaywall, setShowPaywall] = useState(false);
+  const [paywallPlan, setPaywallPlan] = useState<'monthly' | 'yearly'>('yearly');
+  const [paywallStep, setPaywallStep] = useState<'plans' | 'checkout' | 'success' | 'failure'>('plans');
+  const [isProcessingPayment, setIsProcessingPayment] = useState(false);
+  const [paymentProgressStep, setPaymentProgressStep] = useState<string>('');
+  const [currentOrderId, setCurrentOrderId] = useState<string>('');
+  const [paymentErrorMessage, setPaymentErrorMessage] = useState('');
+
   // Weight Logging UI State
   const [weightInput, setWeightInput] = useState('');
   const [weightPeriod, setWeightPeriod] = useState<'90' | '180' | '365'>('90');
@@ -293,6 +477,80 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const nativeCameraInputRef = useRef<HTMLInputElement>(null);
+
+  // Toast notifications state
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
+  const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
+    setToast({ message, type });
+  };
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => setToast(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
+
+  const checkAndShowRLSError = (error: any, contextMessage: string) => {
+    if (!error) return false;
+    const msg = (error.message || '').toLowerCase();
+    if (msg.includes('row-level security') || msg.includes('violates row-level security') || msg.includes('new row violates') || msg.includes('violates row level security')) {
+      showToast(`⚠️ Database security block! Please run 'supabase/reset_database.sql' in your Supabase SQL Editor.`, 'error');
+      return true;
+    }
+    showToast(`${contextMessage}: ${error.message}`, 'error');
+    return true;
+  };
+
+  // Image compressor utility to speed up image analysis and saving
+  const compressImage = (base64Str: string, maxWidth = 640, quality = 0.6): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new window.Image();
+      img.src = base64Str;
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+        if (width > maxWidth || height > maxWidth) {
+          if (width > height) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          } else {
+            width = Math.round((width * maxWidth) / height);
+            height = maxWidth;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        } else {
+          resolve(base64Str);
+        }
+      };
+      img.onerror = () => {
+        resolve(base64Str);
+      };
+    });
+  };
+
+  // State to track calorie percentage animation on Progress tab
+  const [animatedCalorieProgress, setAnimatedCalorieProgress] = useState(0);
+
+  useEffect(() => {
+    if (activeTab === 'progress') {
+      setAnimatedCalorieProgress(0);
+      const timer = setTimeout(() => {
+        const consumed = foodLogs.filter(dateLogFilter).reduce((sum, item) => sum + item.calories, 0);
+        const percent = Math.min(100, (consumed / (profile.daily_calorie_goal || 2200)) * 100);
+        setAnimatedCalorieProgress(percent);
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [activeTab, foodLogs, profile.daily_calorie_goal]);
+
 
   // Initialize Dates calendar bar (last 7 days)
   useEffect(() => {
@@ -305,11 +563,12 @@ export default function App() {
     setDatesList(dates);
   }, []);
 
-  // Splash Timer Effect
+  // Splash Timer Effect — returning users go to login (step 14), new users go to onboarding (step 1)
   useEffect(() => {
     if (onboardingStep === 0) {
       const timer = setTimeout(() => {
-        setOnboardingStep(1);
+        const completed = localStorage.getItem('hb_onboarding_completed');
+        setOnboardingStep(completed === 'true' ? 14 : 1);
       }, 2500);
       return () => clearTimeout(timer);
     }
@@ -354,65 +613,416 @@ export default function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, [onboardingStep, activeTab, showBreakdown, showAICoach, showAddMenu, showCameraScanner, showTextDescriber]);
 
-  // Listen to Supabase Auth State
+  // Listen to Clerk Auth State
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) {
-        setUser(session.user);
-        setAuthMode('demo');
+    if (isUserLoaded) {
+      if (isSignedIn && clerkUser) {
+        const mappedId = clerkIdToUuid(clerkUser.id);
+        const userEmail = clerkUser.primaryEmailAddress?.emailAddress || '';
+        const displayName = clerkUser.fullName || clerkUser.firstName || '';
+        const googleAvatar = clerkUser.imageUrl || '';
+        setUser({
+          id: mappedId,
+          email: userEmail,
+          clerkId: clerkUser.id
+        });
         setOnboardingStep(-1); // Jump straight to home on login
-        fetchUserData(session.user.id, session.user.email || '');
-      }
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session) {
-        setUser(session.user);
-        setOnboardingStep(-1); // Always go home when auth session starts
-        fetchUserData(session.user.id, session.user.email || '');
+        fetchUserData(mappedId, userEmail, session?.id, displayName, googleAvatar);
       } else {
         setUser(null);
-        loadLocalDemoData();
+        setIsProfileLoaded(false);
+        setOnboardingStep(0); // Always start at splash
       }
-    });
+    }
+  }, [isUserLoaded, isSignedIn, clerkUser, session?.id]);
 
-    return () => subscription.unsubscribe();
+  // Real-time subscription to detect active session changes
+  useEffect(() => {
+    if (!user?.id || !session?.id) return;
+
+    const profileChannel = supabase
+      .channel(`profile-changes-${user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'hb_profiles',
+          filter: `id=eq.${user.id}`
+        },
+        (payload) => {
+          const newSessionId = payload.new?.current_session_id;
+          if (newSessionId && session?.id && newSessionId !== session.id) {
+            console.log("Session conflict detected via real-time update!");
+            setSessionConflict(true);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(profileChannel);
+    };
+  }, [user?.id, session?.id]);
+
+  // Poll session state every 5 seconds as a fallback
+  useEffect(() => {
+    if (!user?.id || !session?.id || sessionConflict) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const { data } = await supabase
+          .from('hb_profiles')
+          .select('current_session_id')
+          .eq('id', user.id)
+          .maybeSingle();
+        if (data && data.current_session_id && data.current_session_id !== session.id) {
+          console.log("Session conflict detected via polling!");
+          setSessionConflict(true);
+        }
+      } catch (err) {
+        console.error("Error polling session status:", err);
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [user?.id, session?.id, sessionConflict]);
+
+  // Synchronize logged-in user profile with localStorage cache
+  useEffect(() => {
+    if (user?.id && isProfileLoaded && profile && profile.email !== '' && profile.email !== 'guest@healthybit.app') {
+      localStorage.setItem(`hb_user_profile_${user.id}`, JSON.stringify(profile));
+    }
+  }, [profile, user?.id, isProfileLoaded]);
+
+  // Synchronize logged-in user food logs with localStorage cache
+  useEffect(() => {
+    if (user?.id && isProfileLoaded && foodLogs) {
+      localStorage.setItem(`hb_user_foods_${user.id}`, JSON.stringify(foodLogs));
+    }
+  }, [foodLogs, user?.id, isProfileLoaded]);
+
+  // Synchronize logged-in user weight logs with localStorage cache
+  useEffect(() => {
+    if (user?.id && isProfileLoaded && weightLogs) {
+      localStorage.setItem(`hb_user_weights_${user.id}`, JSON.stringify(weightLogs));
+    }
+  }, [weightLogs, user?.id, isProfileLoaded]);
+
+  // Cashfree Success Redirect Verification - Extract on initial mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const orderId = params.get('order_id');
+    const planParam = params.get('plan') as 'monthly' | 'yearly' | null;
+
+    if (orderId && planParam) {
+      // Clear the query params from the URL immediately so they don't linger
+      const newUrl = window.location.pathname + window.location.hash;
+      window.history.replaceState({}, document.title, newUrl);
+      
+      // Store in localStorage as pending transaction
+      localStorage.setItem('hb_pending_cashfree', JSON.stringify({
+        orderId,
+        plan: planParam,
+        timestamp: Date.now()
+      }));
+    }
   }, []);
 
+  // Process pending Cashfree transactions once user session is active
+  useEffect(() => {
+    const verifyTransaction = async () => {
+      if (user && isProfileLoaded) {
+        const pending = localStorage.getItem('hb_pending_cashfree');
+        if (pending) {
+          try {
+            const { orderId, plan, timestamp } = JSON.parse(pending);
+            // Only process if the transaction is fresh (e.g. less than 10 mins old)
+            if (Date.now() - timestamp < 600000) {
+              // Open the paywall drawer and display verification progress overlay
+              setShowPaywall(true);
+              setPaywallStep('checkout');
+              setIsProcessingPayment(true);
+              setPaymentProgressStep('Verifying your payment with Cashfree secure gateway...');
+
+              // Call Supabase Edge Function to verify payment status
+              const { data, error } = await supabase.functions.invoke('cashfree-payment', {
+                body: {
+                  action: 'check-status',
+                  orderId
+                }
+              });
+
+              if (error || !data || !data.success) {
+                console.error("Payment status check failed:", error || data);
+                const errMsg = data?.error || error?.message || 'Payment not completed or was cancelled.';
+                setPaymentErrorMessage(errMsg);
+                setPaywallStep('failure');
+                setIsProcessingPayment(false);
+                setPaymentProgressStep('');
+              } else {
+                if (data.paid) {
+                  showToast("Payment Verified Successfully!", "success");
+                  await activatePremiumLocally(orderId, data.paymentId, plan);
+                } else {
+                  console.warn("Payment status not success:", data.orderStatus);
+                  const errMsg = `Transaction status is ${data.orderStatus || 'FAILED'}`;
+                  
+                  // Deactivate premium locally only if they don't have an active subscription in the future
+                  const isAlreadyActive = profile.is_premium && 
+                                          profile.premium_until && 
+                                          (new Date(profile.premium_until) > new Date());
+                  if (!isAlreadyActive) {
+                    setProfile(prev => ({
+                      ...prev,
+                      is_premium: false,
+                      premium_until: null
+                    }));
+                  }
+
+                  // Re-fetch user profile to sync client state with the database
+                  try {
+                    await fetchUserData(user.id, user.email || '', session?.id);
+                  } catch (syncErr) {
+                    console.error("Failed to sync profile after failed payment:", syncErr);
+                  }
+
+                  setPaymentErrorMessage(errMsg);
+                  setPaywallStep('failure');
+                  setIsProcessingPayment(false);
+                  setPaymentProgressStep('');
+                }
+              }
+            }
+            localStorage.removeItem('hb_pending_cashfree');
+          } catch (e) {
+            console.error("Error processing pending Cashfree payment:", e);
+            localStorage.removeItem('hb_pending_cashfree');
+            setIsProcessingPayment(false);
+            setPaymentProgressStep('');
+          }
+        }
+      }
+    };
+
+    verifyTransaction();
+  }, [user, isProfileLoaded]);
+
+  // Automatic cleanup of scanned photos older than 24 hours
+  const cleanExpiredPhotos = async (fetchedLogs: FoodLog[], currentUserId?: string) => {
+    const now = new Date();
+    const limit = new Date(now.getTime() - 24 * 60 * 60 * 1000); // 24 hours ago
+
+    // Filter logs that are older than 24 hours and have an active image_url
+    const expiredLogs = fetchedLogs.filter(log => {
+      if (!log.image_url) return false;
+      const loggedAt = new Date(log.logged_at);
+      return loggedAt < limit;
+    });
+
+    if (expiredLogs.length === 0) return;
+
+    // Immediately remove from local state
+    const cleanedLogs = fetchedLogs.map(log => {
+      if (log.image_url && new Date(log.logged_at) < limit) {
+        return { ...log, image_url: null };
+      }
+      return log;
+    });
+
+    setFoodLogs(cleanedLogs);
+    if (!currentUserId) {
+      localStorage.setItem('hb_demo_foods', JSON.stringify(cleanedLogs));
+    }
+
+    if (currentUserId) {
+      for (const log of expiredLogs) {
+        if (!log.id) continue;
+        try {
+          // 1. Remove photo link in the database table hb_food_logs
+          await supabase
+            .from('hb_food_logs')
+            .update({ image_url: null })
+            .eq('id', log.id);
+
+          // 2. If it is stored in Supabase storage bucket 'food-images', delete the file
+          if (log.image_url && log.image_url.includes('/storage/v1/object/public/food-images/')) {
+            const parts = log.image_url.split('/food-images/');
+            if (parts.length > 1) {
+              const filePath = parts[1];
+              await supabase.storage
+                .from('food-images')
+                .remove([filePath]);
+            }
+          }
+        } catch (dbErr) {
+          console.error("Failed to clean up expired photo:", dbErr);
+        }
+      }
+    }
+  };
+
   // Fetch all user details from database or local fallback
-  const fetchUserData = async (userId: string, userEmail: string) => {
+  const fetchUserData = async (userId: string, userEmail: string, currentSessionId?: string, displayName?: string, avatarUrl?: string) => {
     setIsLoading(true);
+
+    // 0. Load offline cached data first for instant UI response
     try {
-      // 1. Fetch Profile
+      const cachedProfile = localStorage.getItem(`hb_user_profile_${userId}`);
+      const cachedFoods = localStorage.getItem(`hb_user_foods_${userId}`);
+      const cachedWeights = localStorage.getItem(`hb_user_weights_${userId}`);
+
+      if (cachedProfile) {
+        const parsed = JSON.parse(cachedProfile);
+        setProfile(parsed);
+        if (parsed.avatar_url) setAvatarUrl(parsed.avatar_url);
+      }
+      if (cachedFoods) {
+        setFoodLogs(JSON.parse(cachedFoods));
+      }
+      if (cachedWeights) {
+        setWeightLogs(JSON.parse(cachedWeights));
+      }
+    } catch (cacheErr) {
+      console.warn("Failed to load offline cache:", cacheErr);
+    }
+
+    try {
+      // 1. Fetch Profile by UUID using maybeSingle to avoid noisy errors
       const { data: profileData, error: profileErr } = await supabase
         .from('hb_profiles')
         .select('*')
         .eq('id', userId)
-        .single();
+        .maybeSingle();
 
-      if (profileErr && profileErr.code === 'PGRST116') {
-        // Profile not created yet, create it
-        const newProfile: Profile = {
-          email: userEmail,
-          name: name || userEmail.split('@')[0],
-          daily_calorie_goal: 2200,
-          protein_goal_g: 130,
-          carbs_goal_g: 220,
-          fats_goal_g: 70,
-          weight_kg: 75,
-          height_cm: 175,
-          target_weight_kg: 70,
-          activity_level: 'moderate',
-          goal_type: 'lose'
-        };
-        const { error: insertErr } = await supabase
+      if (profileErr) {
+        console.error("Error fetching profile by UUID:", profileErr.message);
+        checkAndShowRLSError(profileErr, "Error loading profile from database");
+      }
+
+      if (profileData) {
+        let currentProfile = profileData;
+
+        // Takeover vs Mismatch verification
+        const lastSessionId = localStorage.getItem('hb_last_session_id');
+        const isNewSession = currentSessionId && currentSessionId !== lastSessionId;
+
+        if (isNewSession) {
+          console.log("New session detected on this device. Overwriting current_session_id in database with:", currentSessionId);
+          const { error: sessionErr } = await supabase
+            .from('hb_profiles')
+            .update({ current_session_id: currentSessionId })
+            .eq('id', userId);
+          if (sessionErr) {
+            checkAndShowRLSError(sessionErr, "Failed to update current session");
+          }
+          currentProfile.current_session_id = currentSessionId;
+          localStorage.setItem('hb_last_session_id', currentSessionId);
+        } else {
+          // Session conflict check for existing/restored session
+          if (profileData.current_session_id && currentSessionId && profileData.current_session_id !== currentSessionId) {
+            console.log("Session conflict detected on fetchUserData!");
+            setSessionConflict(true);
+            setIsLoading(false);
+            setIsProfileLoaded(true);
+            return; // Stop loading data for security
+          }
+        }
+
+        // Check if premium subscription has expired
+        if (profileData.is_premium && profileData.premium_until) {
+          const expiry = new Date(profileData.premium_until);
+          if (expiry < new Date()) {
+            console.log('Premium subscription expired. Revoking premium access...');
+            const { error: revokeErr } = await supabase
+              .from('hb_profiles')
+              .update({ is_premium: false, premium_until: null })
+              .eq('id', userId);
+            
+            if (!revokeErr) {
+              currentProfile = { ...profileData, is_premium: false, premium_until: null };
+            } else {
+              console.error('Failed to revoke expired premium in DB:', revokeErr);
+              checkAndShowRLSError(revokeErr, "Failed to revoke premium status");
+            }
+          }
+        }
+        setProfile(currentProfile);
+        if (currentProfile.avatar_url) setAvatarUrl(currentProfile.avatar_url);
+      } else {
+        // No profile found by UUID — check if this email already exists (e.g. Google + email linking)
+        const { data: emailProfile, error: emailFetchErr } = await supabase
           .from('hb_profiles')
-          .insert({ id: userId, ...newProfile });
+          .select('*')
+          .eq('email', userEmail)
+          .maybeSingle();
 
-        if (!insertErr) setProfile(newProfile);
-      } else if (profileData) {
-        setProfile(profileData);
-        if (profileData.avatar_url) setAvatarUrl(profileData.avatar_url);
+        if (emailFetchErr) {
+          checkAndShowRLSError(emailFetchErr, "Failed to check existing profile by email");
+        }
+
+        if (emailProfile) {
+          // Existing profile found via email (prior email/password signup) — migrate it to this UUID
+          console.log('Migrating existing email profile to new auth UUID (account linking)...');
+          const { error: migrateErr } = await supabase
+            .from('hb_profiles')
+            .update({ id: userId, current_session_id: currentSessionId || null })
+            .eq('email', userEmail);
+          
+          if (migrateErr) {
+            checkAndShowRLSError(migrateErr, "Failed to link existing email profile");
+          }
+
+          // Also migrate all food/weight logs from old UUID to new UUID
+          if (emailProfile.id && emailProfile.id !== userId) {
+            await supabase.from('hb_food_logs').update({ user_id: userId }).eq('user_id', emailProfile.id);
+            await supabase.from('hb_weight_logs').update({ user_id: userId }).eq('user_id', emailProfile.id);
+          }
+
+          const merged = { ...emailProfile, id: userId, current_session_id: currentSessionId || null };
+          setProfile(merged);
+          if (merged.avatar_url) setAvatarUrl(merged.avatar_url);
+          if (currentSessionId) localStorage.setItem('hb_last_session_id', currentSessionId);
+        } else {
+          // Brand new user (e.g. first Google login) — create profile using Google display name & avatar
+          const resolvedName = displayName || name || userEmail.split('@')[0];
+          const newProfile: Profile = {
+            email: userEmail,
+            name: resolvedName,
+            avatar_url: avatarUrl || undefined,
+            daily_calorie_goal: 2200,
+            protein_goal_g: 130,
+            carbs_goal_g: 220,
+            fats_goal_g: 70,
+            weight_kg: 75,
+            height_cm: 175,
+            target_weight_kg: 70,
+            activity_level: 'moderate',
+            goal_type: 'lose',
+            is_premium: false,
+            scans_used: 0,
+            premium_until: null,
+            current_session_id: currentSessionId || null
+          };
+          
+          // Use upsert to avoid duplicate key violations and ensure robust creation
+          const { error: insertErr } = await supabase
+            .from('hb_profiles')
+            .upsert({ id: userId, ...newProfile });
+
+          if (insertErr) {
+            checkAndShowRLSError(insertErr, "Failed to create profile");
+            // Set local state anyway so they can use the app as guest / local-first fallback
+            setProfile(newProfile);
+            if (avatarUrl) setAvatarUrl(avatarUrl);
+          } else {
+            setProfile(newProfile);
+            if (avatarUrl) setAvatarUrl(avatarUrl);
+            if (currentSessionId) {
+              localStorage.setItem('hb_last_session_id', currentSessionId);
+            }
+          }
+        }
       }
 
       // 2. Fetch Food Logs
@@ -422,7 +1032,11 @@ export default function App() {
         .eq('user_id', userId)
         .order('logged_at', { ascending: false });
 
-      if (foods) setFoodLogs(foods);
+      if (foods) {
+        setFoodLogs(foods);
+        // Run expired photo cleanup logic
+        cleanExpiredPhotos(foods, userId);
+      }
 
       // 3. Fetch Weight Logs
       const { data: weights } = await supabase
@@ -433,13 +1047,12 @@ export default function App() {
 
       if (weights) setWeightLogs(weights);
 
-
-
     } catch (err) {
       console.error("Error fetching database details, using fallbacks:", err);
       loadLocalDemoData();
     } finally {
       setIsLoading(false);
+      setIsProfileLoaded(true);
     }
   };
 
@@ -447,7 +1060,14 @@ export default function App() {
   const loadLocalDemoData = () => {
     const cachedProfile = localStorage.getItem('hb_demo_profile');
     if (cachedProfile) {
-      setProfile(JSON.parse(cachedProfile));
+      const parsed = JSON.parse(cachedProfile);
+      setProfile(parsed);
+      if (parsed.avatar_url) {
+        setAvatarUrl(parsed.avatar_url);
+      } else {
+        const cachedAvatar = localStorage.getItem('hb_demo_avatar');
+        if (cachedAvatar) setAvatarUrl(cachedAvatar);
+      }
     } else {
       const defaultProfile = {
         email: 'guest@healthybit.app',
@@ -468,7 +1088,10 @@ export default function App() {
 
     const cachedFoods = localStorage.getItem('hb_demo_foods');
     if (cachedFoods) {
-      setFoodLogs(JSON.parse(cachedFoods));
+      const parsedFoods = JSON.parse(cachedFoods);
+      setFoodLogs(parsedFoods);
+      // Run expired photo cleanup logic
+      cleanExpiredPhotos(parsedFoods);
     } else {
       // Seed initial foods resembling screen logs
       const sampleFoods: FoodLog[] = [
@@ -510,90 +1133,84 @@ export default function App() {
 
   };
 
-  // Auth Operations
-  /*
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-    setAuthError('');
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) {
-      // Provide a friendly message for the most common error cases
-      if (error.message.toLowerCase().includes('email not confirmed')) {
-        setAuthError('Your email is not verified yet. Please check your inbox and click the confirmation link, then try again.');
-      } else if (error.message.toLowerCase().includes('invalid login credentials') || error.message.toLowerCase().includes('invalid credentials')) {
-        setAuthError('Incorrect email or password. Please check your details and try again.');
-      } else {
-        setAuthError(error.message);
-      }
-    } else {
-      setUser(data.user);
-      setEmail('');
-      setPassword('');
-    }
-    setIsLoading(false);
-  };
-  */
-
-
-  /*
-  const handleSignup = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-    setAuthError('');
-    setSignupSuccess(false);
-
-    try {
-      // Step 1: Create a pre-confirmed user via admin edge function
-      // This bypasses email verification so the user can log in immediately
-      const { data: fnData, error: fnError } = await supabase.functions.invoke('direct-signup', {
-        body: { email, password, name }
-      });
-
-      if (fnError) throw new Error(fnError.message);
-      if (fnData?.error) {
-        // Handle known errors (e.g. duplicate account)
-        const msg: string = fnData.error;
-        if (msg.toLowerCase().includes('already exists')) {
-          setAuthError('An account with this email already exists. Please sign in instead.');
-          setAuthMode('login');
-          return;
-        }
-        throw new Error(msg);
-      }
-
-      // Step 2: Sign the user in immediately — no email confirmation needed
-      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-        email,
-        password
-      });
-
-      if (signInError) throw new Error(signInError.message);
-
-      // Step 3: Update local state
-      setUser(signInData.user);
-      setEmail('');
-      setPassword('');
-      setName('');
-
-    } catch (err: any) {
-      setAuthError(err.message || 'Signup failed. Please try again.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-  */
-
   // Manage camera stream for Live Food Scan tab
   useEffect(() => {
     let activeStream: MediaStream | null = null;
     let isCurrent = true;
 
     const initScannerCamera = async () => {
-      if (activeTab === 'diet') {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          console.warn("navigator.mediaDevices.getUserMedia is not available. Ensure page is served over HTTPS or localhost.");
-          return;
+      if (activeTab !== 'diet') return;
+
+      // 1. Check if we are in an insecure context (HTTP, not localhost)
+      if (!window.isSecureContext) {
+        console.warn("Insecure context: Camera access is blocked by the browser over HTTP.");
+        if (isCurrent) {
+          setCameraPermissionStatus('denied');
+          setIsCameraInitializing(false);
+        }
+        return;
+      }
+
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        console.warn("navigator.mediaDevices.getUserMedia is not available.");
+        if (isCurrent) {
+          setCameraPermissionStatus('denied');
+          setIsCameraInitializing(false);
+        }
+        return;
+      }
+
+      // 2. Query permissions state if available
+      let permissionState: 'prompt' | 'granted' | 'denied' = 'prompt';
+
+      // Fallback for Safari/iOS: use localStorage
+      const wasCameraGranted = localStorage.getItem('hb_camera_granted') === 'true';
+      if (wasCameraGranted) {
+        permissionState = 'granted';
+      } else if (navigator.permissions && navigator.permissions.query) {
+        try {
+          const result = await navigator.permissions.query({ name: 'camera' as any });
+          permissionState = result.state as 'prompt' | 'granted' | 'denied';
+
+          // Setup live permission listener
+          result.onchange = () => {
+            if (isCurrent) {
+              const newState = result.state as 'prompt' | 'granted' | 'denied';
+              setCameraPermissionStatus(newState);
+              if (newState === 'granted') {
+                setCameraTrigger(prev => prev + 1);
+              }
+            }
+          };
+        } catch (e) {
+          // Permissions API might fail or not support camera query
+        }
+      }
+
+      if (isCurrent) {
+        setCameraPermissionStatus(permissionState);
+      }
+
+      // 3. If state is denied, don't try to access camera
+      if (permissionState === 'denied') {
+        if (isCurrent) {
+          setIsCameraInitializing(false);
+        }
+        return;
+      }
+
+      // 4. If state is prompt, show the allow camera popup overlay, do not auto-request stream
+      if (permissionState === 'prompt') {
+        if (isCurrent) {
+          setIsCameraInitializing(false);
+        }
+        return;
+      }
+
+      // 5. If state is granted, initialize the camera stream
+      if (permissionState === 'granted') {
+        if (isCurrent) {
+          setIsCameraInitializing(true);
         }
 
         try {
@@ -615,12 +1232,34 @@ export default function App() {
           }
 
           activeStream = stream;
-          if (liveVideoRef.current) {
-            liveVideoRef.current.srcObject = stream;
-            await liveVideoRef.current.play().catch(() => {});
+          if (isCurrent) {
+            setCameraPermissionStatus('granted');
+            localStorage.setItem('hb_camera_granted', 'true');
+            setIsCameraInitializing(false);
           }
-        } catch (err) {
+
+          // Assign stream and play — retry after a short delay for mobile browsers
+          const playVideo = () => {
+            if (liveVideoRef.current) {
+              liveVideoRef.current.srcObject = stream;
+              liveVideoRef.current.play().catch(() => {});
+            }
+          };
+          playVideo();
+          // Retry after React re-render to ensure video element is visible
+          setTimeout(playVideo, 200);
+
+        } catch (err: any) {
           console.warn("Live scan tab camera failed completely:", err);
+          if (isCurrent) {
+            if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+              setCameraPermissionStatus('denied');
+              localStorage.removeItem('hb_camera_granted');
+            } else {
+              setCameraPermissionStatus('denied');
+            }
+            setIsCameraInitializing(false);
+          }
         }
       }
     };
@@ -640,8 +1279,87 @@ export default function App() {
         window.speechSynthesis.cancel();
       }
       setLiveScanDetectedFood(null);
+      setIsCameraInitializing(false);
     };
-  }, [activeTab]);
+  }, [activeTab, cameraTrigger]);
+
+  // Shake detection hook for Live Scan
+  useEffect(() => {
+    let lastX = 0, lastY = 0, lastZ = 0;
+    let lastTime = 0;
+    const SHAKE_THRESHOLD = 25; // Good shake threshold for mobile acceleration differences
+
+    const handleMotionEvent = (event: DeviceMotionEvent) => {
+      const acceleration = event.accelerationIncludingGravity || event.acceleration;
+      if (!acceleration) return;
+
+      const currentTime = Date.now();
+      if ((currentTime - lastTime) > 100) {
+        const diffTime = currentTime - lastTime;
+        lastTime = currentTime;
+
+        const x = acceleration.x || 0;
+        const y = acceleration.y || 0;
+        const z = acceleration.z || 0;
+
+        // Calculate velocity or acceleration changes
+        const speed = Math.abs(x + y + z - lastX - lastY - lastZ) / diffTime * 10000;
+
+        if (speed > SHAKE_THRESHOLD) {
+          setIsShaking(true);
+        }
+
+        lastX = x;
+        lastY = y;
+        lastZ = z;
+      }
+    };
+
+    // Auto clear shaking state if no movement is detected for 1.2 seconds
+    let clearTimer: any = null;
+    if (isShaking) {
+      clearTimer = setTimeout(() => {
+        setIsShaking(false);
+      }, 1200);
+    }
+
+    if (activeTab === 'diet' && cameraPermissionStatus === 'granted') {
+      window.addEventListener('devicemotion', handleMotionEvent);
+      // Request permissions for iOS if necessary
+      if (
+        typeof DeviceMotionEvent !== 'undefined' &&
+        typeof (DeviceMotionEvent as any).requestPermission === 'function'
+      ) {
+        (DeviceMotionEvent as any).requestPermission().catch(() => {});
+      }
+    }
+
+    return () => {
+      window.removeEventListener('devicemotion', handleMotionEvent);
+      if (clearTimer) clearTimeout(clearTimer);
+    };
+  }, [activeTab, cameraPermissionStatus, isShaking]);
+
+  // 10-second automatic camera timeout if no food is detected
+  useEffect(() => {
+    let timer: any = null;
+    if (activeTab === 'diet' && cameraPermissionStatus === 'granted' && !isCameraInitializing && !liveScanDetectedFood) {
+      console.log("[Scanner Timer] Started 10-second food scan timer.");
+      timer = setTimeout(() => {
+        if (activeTab === 'diet' && !liveScanDetectedFood) {
+          console.log("[Scanner Timer] No food detected in 10 seconds. Automatically turning off and redirecting to home.");
+          setActiveTab('home');
+          showToast("No food detected within 10 seconds. Scanner automatically turned off.", "info");
+        }
+      }, 10000);
+    }
+    return () => {
+      if (timer) {
+        console.log("[Scanner Timer] Cleared food scan timer.");
+        clearTimeout(timer);
+      }
+    };
+  }, [activeTab, cameraPermissionStatus, isCameraInitializing, liveScanDetectedFood]);
 
   // General tab change listener to clean up other camera states and text-to-speech
   useEffect(() => {
@@ -651,57 +1369,236 @@ export default function App() {
     }
   }, [activeTab]);
 
+  // Stop AI voice when scan screens/drawers are closed (e.g. Back button, Save to Log, Tab change)
+  useEffect(() => {
+    if (!showBreakdown && !showCameraScanner && !showTextDescriber) {
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    }
+  }, [showBreakdown, showCameraScanner, showTextDescriber]);
+
   const speakFoodAnalysis = (result: FoodAnalysisResult) => {
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
-      const text = `We detected ${result.foodName}. It contains ${result.calories} calories, ${result.protein} grams of protein, ${result.carbs} grams of carbohydrates, and ${result.fats} grams of fat.`;
+      
+      const isHindi = aiVoiceLanguage === 'hi';
+      const text = isHindi
+        ? `स्कैन किया गया ${result.foodName}। इसमें ${result.calories} कैलोरी, ${result.protein} ग्राम प्रोटीन, ${result.carbs} ग्राम कार्बोहाइड्रेट, और ${result.fats} ग्राम फैट है।`
+        : `Scanned ${result.foodName}. It has ${result.calories} calories, ${result.protein} grams of protein, ${result.carbs} grams of carbs, and ${result.fats} grams of fat.`;
+      
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 1.0;
-      utterance.pitch = 1.0;
+      utterance.lang = isHindi ? 'hi-IN' : 'en-US';
+      
+      const voices = window.speechSynthesis.getVoices();
+      let selectedVoice = null;
+      
+      if (isHindi) {
+        selectedVoice = voices.find(v => {
+          const lang = v.lang.toLowerCase();
+          const name = v.name.toLowerCase();
+          return (lang.startsWith('hi') || name.includes('hindi') || name.includes('india')) && (
+            name.includes('female') ||
+            name.includes('google') ||
+            name.includes('swara') ||
+            name.includes('kalpana') ||
+            (v as any).gender === 'female'
+          );
+        }) || voices.find(v => {
+          const lang = v.lang.toLowerCase();
+          const name = v.name.toLowerCase();
+          return lang.startsWith('hi') || name.includes('hindi') || name.includes('india');
+        });
+      } else {
+        selectedVoice = voices.find(v => {
+          const lang = v.lang.toLowerCase();
+          const name = v.name.toLowerCase();
+          return lang.startsWith('en') && (
+            name.includes('female') || 
+            name.includes('google us english') || 
+            name.includes('zira') || 
+            name.includes('samantha') || 
+            name.includes('victoria') || 
+            name.includes('hazel') ||
+            name.includes('natural') ||
+            name.includes('karen') ||
+            name.includes('moira') ||
+            name.includes('tessa') ||
+            name.includes('siri') ||
+            (v as any).gender === 'female'
+          );
+        });
+      }
+      
+      if (selectedVoice) {
+        utterance.voice = selectedVoice;
+      }
+      utterance.rate = isHindi ? 1.05 : 1.0;
+      utterance.pitch = isHindi ? 1.1 : 1.25;
       window.speechSynthesis.speak(utterance);
     }
   };
 
-  const handleLiveScan = async () => {
+
+
+  const isValidFood = (res: any): boolean => {
+    if (!res) return false;
+    const name = (res.foodName || '').toLowerCase();
+    if (
+      name.includes('no food') ||
+      name.includes('not food') ||
+      name.includes('not a food') ||
+      name.includes('unknown') ||
+      name.includes('empty') ||
+      name.includes('refuse') ||
+      name.includes('no visible') ||
+      name.includes('unable to') ||
+      name.includes('camera blocked') ||
+      name.includes('no scan') ||
+      (res.calories || 0) <= 0
+    ) {
+      return false;
+    }
+    return true;
+  };
+
+  const handleLiveScan = async (isAuto = false) => {
     if (isAnalyzingFrame) return;
     setIsAnalyzingFrame(true);
-    setScanError(null);
-    setLiveScanDetectedFood(null);
+    if (!isAuto) {
+      setScanError(null);
+    }
 
-    // Camera mode: capture image from video element and scan with gemini-3-flash-live
+    if (isShaking) {
+      setIsAnalyzingFrame(false);
+      if (!isAuto) {
+        const shakeMsg = "Do not shake mobile. Stay stable to get an accurate answer.";
+        setScanError(shakeMsg);
+        if ('speechSynthesis' in window) {
+          window.speechSynthesis.cancel();
+          const isHindi = aiVoiceLanguage === 'hi';
+          const spokenText = isHindi
+            ? "कृपया मोबाइल को न हिलाएं। सही स्कैन के लिए इसे स्थिर रखें।"
+            : "Do not shake mobile. Stay stable to get an accurate answer.";
+          
+          const utterance = new SpeechSynthesisUtterance(spokenText);
+          utterance.lang = isHindi ? 'hi-IN' : 'en-US';
+          
+          const voices = window.speechSynthesis.getVoices();
+          let selectedVoice = null;
+          
+          if (isHindi) {
+            selectedVoice = voices.find(v => {
+              const lang = v.lang.toLowerCase();
+              const name = v.name.toLowerCase();
+              return (lang.startsWith('hi') || name.includes('hindi') || name.includes('india')) && (
+                name.includes('female') ||
+                name.includes('google') ||
+                name.includes('swara') ||
+                name.includes('kalpana') ||
+                (v as any).gender === 'female'
+              );
+            }) || voices.find(v => {
+              const lang = v.lang.toLowerCase();
+              const name = v.name.toLowerCase();
+              return lang.startsWith('hi') || name.includes('hindi') || name.includes('india');
+            });
+          } else {
+            selectedVoice = voices.find(v => {
+              const lang = v.lang.toLowerCase();
+              const name = v.name.toLowerCase();
+              return lang.startsWith('en') && (
+                name.includes('female') || 
+                name.includes('google us english') || 
+                name.includes('zira') || 
+                name.includes('samantha') || 
+                name.includes('victoria') || 
+                name.includes('hazel') ||
+                name.includes('natural') ||
+                name.includes('karen') ||
+                name.includes('moira') ||
+                name.includes('tessa') ||
+                name.includes('siri') ||
+                (v as any).gender === 'female'
+              );
+            });
+          }
+          
+          if (selectedVoice) {
+            utterance.voice = selectedVoice;
+          }
+          utterance.rate = isHindi ? 1.05 : 1.0;
+          utterance.pitch = isHindi ? 1.1 : 1.25;
+          window.speechSynthesis.speak(utterance);
+        }
+      }
+      return;
+    }
+
+    // Camera mode: capture image from video element and scan with Gemini 3.5 Flash
     if (liveVideoRef.current) {
       try {
         const canvas = document.createElement('canvas');
-        canvas.width = liveVideoRef.current.videoWidth || 640;
-        canvas.height = liveVideoRef.current.videoHeight || 480;
+        const videoWidth = liveVideoRef.current.videoWidth || 640;
+        const videoHeight = liveVideoRef.current.videoHeight || 480;
+        const maxWidth = 640;
+        let width = videoWidth;
+        let height = videoHeight;
+        if (width > maxWidth || height > maxWidth) {
+          if (width > height) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          } else {
+            width = Math.round((width * maxWidth) / height);
+            height = maxWidth;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          ctx.drawImage(liveVideoRef.current, 0, 0, canvas.width, canvas.height);
-          const base64 = canvas.toDataURL('image/jpeg');
-          // Call our live analyzer (which invokes gemini-3-flash-live)
+          ctx.drawImage(liveVideoRef.current, 0, 0, width, height);
+          const base64 = canvas.toDataURL('image/jpeg', 0.6);
+          // Call our live analyzer (which invokes Gemini 3.5 Flash)
           const result = await analyzeLiveFoodFrame(base64, 'image/jpeg');
-          setLiveScanDetectedFood(result);
-          setLastScannedBase64(base64);
-          setScannedImage(base64);
-          speakFoodAnalysis(result);
+          
+          if (isValidFood(result)) {
+            setLiveScanDetectedFood(result);
+            setLastScannedBase64(base64);
+            setScannedImage(base64);
+            speakFoodAnalysis(result);
+            if (!isAuto) {
+              setScanError(null);
+            }
+          } else {
+            console.log("[handleLiveScan] No valid food detected in frame:", result);
+            if (!isAuto) {
+              setScanError("No food detected in frame. Please align your food inside the viewfinder.");
+            }
+          }
         } else {
           throw new Error('Canvas context failed');
         }
       } catch (err: any) {
         console.error("Live scan failed:", err);
-        if (err?.message === 'quota_exceeded') {
-          setScanError('quota');
-        } else {
-          setScanError('failed');
+        if (!isAuto) {
+          if (err?.message === 'quota_exceeded') {
+            setScanError('quota');
+          } else {
+            setScanError('failed');
+          }
         }
       } finally {
         setIsAnalyzingFrame(false);
       }
     } else {
       setIsAnalyzingFrame(false);
-      setScanError('failed');
+      if (!isAuto) {
+        setScanError('failed');
+      }
     }
   };
+
 
   const handleSaveLiveScannedFood = async () => {
     if (!liveScanDetectedFood || isSavingMeal) return;
@@ -741,39 +1638,119 @@ export default function App() {
     }
 
     playFeedback();
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
     setLiveScanDetectedFood(null);
     setIsSavingMeal(false);
     
-    alert(`Successfully logged ${newLog.food_name}! 🎉`);
+    showToast(`Successfully logged ${newLog.food_name}! 🎉`, 'success');
   };
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    try {
+      await signOut();
+    } catch (e) {
+      console.warn("Clerk signOut failed or ignored:", e);
+    }
+    localStorage.removeItem('hb_last_session_id');
     setUser(null);
     setAvatarUrl(null);
-    loadLocalDemoData();
+    setProfile({
+      email: '',
+      name: '',
+      daily_calorie_goal: 2200,
+      protein_goal_g: 130,
+      carbs_goal_g: 220,
+      fats_goal_g: 70,
+      weight_kg: 75,
+      height_cm: 175,
+      target_weight_kg: 70,
+      activity_level: 'moderate',
+      goal_type: 'lose',
+      is_premium: false,
+      scans_used: 0,
+      premium_until: null
+    });
+    setFoodLogs([]);
+    setWeightLogs([]);
+    setChatMessages([]);
+    setActiveTab('home');
+    setAuthMode('login'); // Go to login mode
+    setOnboardingStep(14); // Go straight to Login page (Step 14)
   };
 
-  // Upload avatar photo to Supabase Storage
+  // Upload avatar photo to Supabase Storage or local cache
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || !user) return;
+    if (!file) return;
     setIsUploadingAvatar(true);
     try {
+      if (!user) {
+        // Guest mode base64 avatar
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64 = reader.result as string;
+          setAvatarUrl(base64);
+          setProfile(prev => ({ ...prev, avatar_url: base64 }));
+          localStorage.setItem('hb_demo_avatar', base64);
+          setIsUploadingAvatar(false);
+          showToast('Avatar updated locally (guest mode)!', 'success');
+        };
+        reader.readAsDataURL(file);
+        return;
+      }
       const ext = file.name.split('.').pop()?.toLowerCase() || 'jpg';
       const filePath = `${user.id}/avatar.${ext}`;
-      const { data: uploadData, error: uploadErr } = await supabase.storage
+      
+      let uploadData;
+      let bucketToUse = 'avatars';
+      
+      // Attempt upload to avatars bucket
+      const { data: upData, error: upErr } = await supabase.storage
         .from('avatars')
         .upload(filePath, file, { contentType: file.type, upsert: true });
-      if (uploadErr) throw uploadErr;
-      const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(uploadData.path);
+        
+      if (upErr) {
+        console.warn('Avatars bucket failed, trying food-images:', upErr.message);
+        // Fallback to food-images bucket
+        const { data: fallbackData, error: fallbackErr } = await supabase.storage
+          .from('food-images')
+          .upload(`avatars/${filePath}`, file, { contentType: file.type, upsert: true });
+          
+        if (fallbackErr) {
+          throw new Error(`Failed to upload avatar: ${fallbackErr.message}`);
+        }
+        uploadData = fallbackData;
+        bucketToUse = 'food-images';
+      } else {
+        uploadData = upData;
+      }
+      
+      if (!uploadData) {
+        throw new Error('Upload succeeded but no data returned.');
+      }
+      
+      const { data: urlData } = supabase.storage.from(bucketToUse).getPublicUrl(uploadData.path);
       const publicUrl = urlData.publicUrl + '?t=' + Date.now(); // cache-bust
       setAvatarUrl(publicUrl);
+      
       // Persist to profile
-      await supabase.from('hb_profiles').update({ avatar_url: urlData.publicUrl }).eq('id', user.id);
-      setProfile(prev => ({ ...prev, avatar_url: urlData.publicUrl }));
-    } catch (err) {
+      const { error: dbErr } = await supabase
+        .from('hb_profiles')
+        .update({ avatar_url: urlData.publicUrl })
+        .eq('id', user.id);
+        
+      if (dbErr) {
+        console.error('Error updating profile avatar in database:', dbErr);
+        showToast('Avatar uploaded, but failed to link to profile in DB.', 'error');
+      } else {
+        setProfile(prev => ({ ...prev, avatar_url: urlData.publicUrl }));
+        showToast('Profile picture updated successfully!', 'success');
+      }
+    } catch (err: any) {
       console.error('Avatar upload error:', err);
+      showToast(err.message || 'Failed to upload avatar.', 'error');
     } finally {
       setIsUploadingAvatar(false);
       // Reset input so same file can be re-picked
@@ -785,10 +1762,227 @@ export default function App() {
   const handleSaveProfile = async (updated: Profile) => {
     setProfile(updated);
     if (user) {
-      await supabase.from('hb_profiles').upsert({ id: user.id, ...updated });
+      // Filter out non-database columns like 'phone' to prevent PostgreSQL errors
+      const dbProfile: any = {};
+      const allowedColumns = [
+        'email',
+        'name',
+        'daily_calorie_goal',
+        'protein_goal_g',
+        'carbs_goal_g',
+        'fats_goal_g',
+        'weight_kg',
+        'height_cm',
+        'target_weight_kg',
+        'activity_level',
+        'goal_type',
+        'avatar_url',
+        'is_premium',
+        'scans_used',
+        'premium_until'
+      ];
+
+      for (const key of allowedColumns) {
+        if (key in updated) {
+          dbProfile[key] = (updated as any)[key];
+        }
+      }
+
+      console.log('Upserting profile to hb_profiles:', dbProfile);
+      const { error } = await supabase.from('hb_profiles').upsert({ id: user.id, ...dbProfile });
+      if (error) {
+        console.error('Error upserting profile in hb_profiles:', error);
+      } else {
+        console.log('Profile upserted successfully');
+      }
     } else {
       localStorage.setItem('hb_demo_profile', JSON.stringify(updated));
     }
+  };
+
+  const activatePremiumLocally = async (_cashfreeOrderId: string, _cashfreePaymentId: string | null, plan: 'monthly' | 'yearly') => {
+    const expiryDate = new Date();
+    if (plan === 'monthly') {
+      expiryDate.setMonth(expiryDate.getMonth() + 1);
+    } else {
+      expiryDate.setFullYear(expiryDate.getFullYear() + 1);
+    }
+
+    const premiumUntilISO = expiryDate.toISOString();
+
+    // 1. Update local React state instantly for responsive UI
+    setProfile(prev => ({
+      ...prev,
+      is_premium: true,
+      premium_until: premiumUntilISO
+    }));
+
+    // 2. Also directly write to Supabase in case the edge function hasn't finished yet
+    if (user) {
+      try {
+        const { error: dbErr } = await supabase
+          .from('hb_profiles')
+          .update({ is_premium: true, premium_until: premiumUntilISO })
+          .eq('id', user.id);
+
+        if (dbErr) {
+          console.error('Error directly writing premium to DB:', dbErr);
+        } else {
+          console.log('Premium status written directly to Supabase successfully.');
+        }
+      } catch (writeErr) {
+        console.error('Failed to write premium to DB directly:', writeErr);
+      }
+    }
+
+    setPaywallStep('success');
+    setIsProcessingPayment(false);
+    setPaymentProgressStep('');
+    setShowPaywall(true);
+
+    try {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      const ctx = audioCtxRef.current;
+      if (ctx.state === 'suspended') ctx.resume();
+      const playTone = (freq: number, startDelay: number) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, ctx.currentTime + startDelay);
+        gain.gain.setValueAtTime(0.04, ctx.currentTime + startDelay);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + startDelay + 0.15);
+        osc.start(ctx.currentTime + startDelay);
+        osc.stop(ctx.currentTime + startDelay + 0.15);
+      };
+      playTone(523.25, 0); playTone(659.25, 0.08); playTone(783.99, 0.16); playTone(1046.50, 0.24);
+    } catch (e) { }
+  };
+
+  const handleCashfreeCheckout = async (plan: 'monthly' | 'yearly') => {
+    if (!user) {
+      showToast("Please sign in or create an account to upgrade to Pro.", 'info');
+      setOnboardingStep(14);
+      return;
+    }
+    setPaywallPlan(plan);
+    setPaywallStep('checkout');
+    setIsProcessingPayment(true);
+    setPaymentProgressStep('Connecting to Cashfree Secure Payment Gateway...');
+    
+    const safetyTimer = setTimeout(() => {
+      setIsProcessingPayment(false);
+      setPaymentProgressStep('');
+    }, 45000);
+
+    const price = plan === 'yearly' ? 1800 : 300;
+
+    try {
+      // Calculate origin reachable by mobile devices & desktop
+      let redirectUrlOrigin = window.location.origin;
+      if (redirectUrlOrigin.includes('localhost') || redirectUrlOrigin.startsWith('file:') || redirectUrlOrigin.includes('capacitor')) {
+        const hostname = (window.location.hostname && window.location.hostname !== 'localhost') ? window.location.hostname : '10.48.105.150';
+        const port = window.location.port ? `:${window.location.port}` : ':5173';
+        redirectUrlOrigin = `http://${hostname}${port}`;
+      }
+
+      console.log('Initiating Cashfree checkout with origin:', redirectUrlOrigin);
+
+      const { data, error } = await supabase.functions.invoke('cashfree-payment', {
+        body: {
+          plan,
+          amount: price,
+          userId: user.id,
+          redirectUrlOrigin,
+          userPhone: profile.phone || '',
+          userEmail: user.email || profile.email || ''
+        }
+      });
+
+      clearTimeout(safetyTimer);
+
+      if (error) {
+        throw new Error(error.message || 'Failed to initiate secure payment via Cashfree Edge Function');
+      }
+      if (!data || !data.success) {
+        throw new Error(data?.error || 'Cashfree payment initiation failed');
+      }
+
+      if (data.orderId) {
+        setCurrentOrderId(data.orderId);
+      }
+
+      if (data.paymentSessionId) {
+        // Ensure Cashfree SDK script is loaded dynamically
+        if (!(window as any).Cashfree) {
+          setPaymentProgressStep('Loading Cashfree Payment Gateway SDK...');
+          await new Promise<void>((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = 'https://sdk.cashfree.com/js/v3/cashfree.js';
+            script.onload = () => resolve();
+            script.onerror = () => reject(new Error('Failed to load Cashfree Checkout SDK'));
+            document.head.appendChild(script);
+          });
+        }
+
+        // Save pending transaction details to localStorage so after Cashfree redirect return, app verifies payment
+        if (data.orderId) {
+          localStorage.setItem('hb_pending_cashfree', JSON.stringify({
+            orderId: data.orderId,
+            plan,
+            timestamp: Date.now()
+          }));
+        }
+
+        // Initialize Cashfree SDK (sandbox mode)
+        const cashfree = (window as any).Cashfree({
+          mode: "sandbox"
+        });
+
+        setIsProcessingPayment(true);
+        setPaymentProgressStep('Redirecting to Cashfree Payment Gateway...');
+
+        // Launch Cashfree checkout with redirectTarget: "_self" for full mobile compatibility
+        cashfree.checkout({
+          paymentSessionId: data.paymentSessionId,
+          redirectTarget: "_self"
+        });
+      } else {
+        throw new Error('No payment session ID returned from Cashfree server');
+      }
+
+    } catch (err: any) {
+      clearTimeout(safetyTimer);
+      setIsProcessingPayment(false);
+      setPaymentProgressStep('');
+      console.error('Cashfree secure API gateway failed:', err);
+      setPaymentErrorMessage(err.message || String(err));
+      setPaywallStep('failure');
+    }
+  };
+
+  const handleActivatePremium = async (plan: 'monthly' | 'yearly') => {
+    await handleCashfreeCheckout(plan);
+  };
+
+  const handleTestCheckout = async () => {
+    if (!user) {
+      showToast("Please sign in or create an account to upgrade to Pro.", 'info');
+      setOnboardingStep(14);
+      return;
+    }
+    setPaywallPlan('monthly');
+    setIsProcessingPayment(true);
+    setPaymentProgressStep('Processing test checkout...');
+    const orderId = 'HB_ORD_TEST_' + Date.now() + Math.random().toString(36).substring(2, 6).toUpperCase();
+    setCurrentOrderId(orderId);
+
+    setTimeout(async () => {
+      await activatePremiumLocally(orderId, 'PAY_TEST_' + Date.now(), 'monthly');
+      showToast("🎉 Test Payment Successful! Premium Activated.", "success");
+    }, 800);
   };
 
   const handleSaveSettings = async () => {
@@ -798,7 +1992,12 @@ export default function App() {
       height_cm: parseFloat(settingsHeight) || profile.height_cm,
       weight_kg: parseFloat(settingsWeight) || profile.weight_kg,
       daily_calorie_goal: parseInt(settingsCalorieGoal) || profile.daily_calorie_goal,
-      target_weight_kg: parseFloat(settingsTargetWeight) || profile.target_weight_kg
+      target_weight_kg: parseFloat(settingsTargetWeight) || profile.target_weight_kg,
+      goal_type: settingsGoalType || profile.goal_type,
+      activity_level: settingsActivityLevel || profile.activity_level,
+      protein_goal_g: parseFloat(settingsProteinGoal) || profile.protein_goal_g,
+      carbs_goal_g: parseFloat(settingsCarbsGoal) || profile.carbs_goal_g,
+      fats_goal_g: parseFloat(settingsFatsGoal) || profile.fats_goal_g
     };
     await handleSaveProfile(updated);
     setSettingsSaveSuccess(true);
@@ -807,35 +2006,91 @@ export default function App() {
     }, 3000);
   };
 
-  // Camera Management — mobile-first: try native camera, fall back to file picker with capture
-  const startCamera = async () => {
-    setShowAddMenu(false);
+  const handleSettingsChangePassword = async () => {
+    setSettingsPasswordError('');
+    setSettingsPasswordSuccess(false);
 
-    // On mobile, the most reliable way to open the camera is via a file input with capture attribute.
-    // We still try getUserMedia first for desktop; on mobile it often fails due to browser policy.
-    const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
-
-    if (isMobile) {
-      // Open the native camera directly via file input (works on all mobile browsers)
-      setShowCameraScanner(true);
-      setTimeout(() => fileInputRef.current?.click(), 100);
+    if (settingsNewPassword.length < 6) {
+      setSettingsPasswordError('Password must be at least 6 characters.');
+      return;
+    }
+    if (settingsNewPassword !== settingsNewPasswordConfirm) {
+      setSettingsPasswordError('Passwords do not match.');
       return;
     }
 
+    setIsLoading(true);
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: settingsNewPassword
+      });
+      if (error) throw error;
+      setSettingsPasswordSuccess(true);
+      setSettingsNewPassword('');
+      setSettingsNewPasswordConfirm('');
+      setTimeout(() => {
+        setShowSettingsChangePassword(false);
+        setSettingsPasswordSuccess(false);
+      }, 2000);
+    } catch (err: any) {
+      setSettingsPasswordError(err.message || 'Failed to update password.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const requestCameraPermission = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      setCameraPermissionStatus('granted');
+      localStorage.setItem('hb_camera_granted', 'true');
+      stream.getTracks().forEach(track => track.stop());
+      setCameraTrigger(prev => prev + 1);
+      return true;
+    } catch (err: any) {
+      console.warn("Camera request permission failed:", err);
+      setCameraPermissionStatus('denied');
+      localStorage.removeItem('hb_camera_granted');
+      return false;
+    }
+  };
+
+  // Camera Management — mobile-first: try native camera, fall back to file picker with capture
+  const startCamera = async () => {
+    setShowAddMenu(false);
     setShowCameraScanner(true);
+
+    const isSecure = window.isSecureContext;
+    const hasMedia = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+
+    if (!isSecure || !hasMedia) {
+      console.warn("Insecure HTTP context or getUserMedia unsupported. Showing unsupported scanner UI.");
+      setCameraPermissionStatus('unsupported');
+      return;
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
       });
+
+      // Permission granted! Show camera scanner screen and bind stream
+      setCameraPermissionStatus('granted');
+      localStorage.setItem('hb_camera_granted', 'true');
       setCameraStream(stream);
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => { });
-      }
+
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch((err) => {
+            console.warn("Failed to play video stream:", err);
+          });
+        }
+      }, 100);
+
     } catch (err) {
-      console.warn("getUserMedia failed, falling back to file picker:", err);
-      // Fall back to file picker with camera capture
-      setTimeout(() => fileInputRef.current?.click(), 100);
+      console.warn("getUserMedia failed or denied, showing blocked state:", err);
+      setCameraPermissionStatus('denied');
     }
   };
 
@@ -845,18 +2100,35 @@ export default function App() {
       setCameraStream(null);
     }
     setShowCameraScanner(false);
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
   };
 
   // Handle Photo Capture
   const capturePhoto = () => {
     if (videoRef.current) {
       const canvas = document.createElement('canvas');
-      canvas.width = videoRef.current.videoWidth || 640;
-      canvas.height = videoRef.current.videoHeight || 480;
+      const videoWidth = videoRef.current.videoWidth || 640;
+      const videoHeight = videoRef.current.videoHeight || 480;
+      const maxWidth = 640;
+      let width = videoWidth;
+      let height = videoHeight;
+      if (width > maxWidth || height > maxWidth) {
+        if (width > height) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        } else {
+          width = Math.round((width * maxWidth) / height);
+          height = maxWidth;
+        }
+      }
+      canvas.width = width;
+      canvas.height = height;
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL('image/jpeg');
+        ctx.drawImage(videoRef.current, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
         setScannedImage(dataUrl);
         stopCamera();
         analyzeCapturedImage(dataUrl);
@@ -869,11 +2141,12 @@ export default function App() {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onloadend = () => {
+      reader.onloadend = async () => {
         const base64 = reader.result as string;
-        setScannedImage(base64);
+        const compressedBase64 = await compressImage(base64);
+        setScannedImage(compressedBase64);
         stopCamera();
-        analyzeCapturedImage(base64);
+        analyzeCapturedImage(compressedBase64);
       };
       reader.readAsDataURL(file);
     }
@@ -881,6 +2154,10 @@ export default function App() {
 
   // Process and Analyze Image
   const analyzeCapturedImage = async (base64Image: string) => {
+    if (!profile.is_premium && (profile.scans_used || 0) >= 3) {
+      setShowPaywall(true);
+      return;
+    }
     setIsLoading(true);
     setScanError(null);
     setLastScannedBase64(base64Image);
@@ -890,6 +2167,17 @@ export default function App() {
       const result = await analyzeFoodImage(base64Image, 'image/jpeg');
       setCurrentAnalysis(result);
       setBreakdownQuantity(1);
+      speakFoodAnalysis(result);
+
+      // Increment scans count
+      const nextScans = (profile.scans_used || 0) + 1;
+      const updatedProfile = { ...profile, scans_used: nextScans };
+      setProfile(updatedProfile);
+      if (user) {
+        await supabase.from('hb_profiles').update({ scans_used: nextScans }).eq('id', user.id);
+      } else {
+        localStorage.setItem('hb_demo_profile', JSON.stringify(updatedProfile));
+      }
     } catch (err: any) {
       setShowBreakdown(false);
       if (err?.message === 'quota_exceeded') {
@@ -905,6 +2193,10 @@ export default function App() {
   // Process Text Foods
   const analyzeTextIngredients = async () => {
     if (!inputText.trim()) return;
+    if (!profile.is_premium && (profile.scans_used || 0) >= 3) {
+      setShowPaywall(true);
+      return;
+    }
     setIsLoading(true);
     setScanError(null);
     setCurrentAnalysis(null);
@@ -913,6 +2205,17 @@ export default function App() {
       const result = await analyzeFoodText(inputText);
       setCurrentAnalysis(result);
       setBreakdownQuantity(1);
+      speakFoodAnalysis(result);
+
+      // Increment scans count
+      const nextScans = (profile.scans_used || 0) + 1;
+      const updatedProfile = { ...profile, scans_used: nextScans };
+      setProfile(updatedProfile);
+      if (user) {
+        await supabase.from('hb_profiles').update({ scans_used: nextScans }).eq('id', user.id);
+      } else {
+        localStorage.setItem('hb_demo_profile', JSON.stringify(updatedProfile));
+      }
     } catch (err: any) {
       setShowBreakdown(false);
       if (err?.message === 'quota_exceeded') {
@@ -1078,13 +2381,9 @@ export default function App() {
         parts: [{ text: m.text }]
       }));
 
-      const systemInstruction = `You are an expert, friendly AI Nutrition Coach on the HealthyBit app.
-User profile: Daily Calorie Goal: ${profile.daily_calorie_goal}kcal, Current Weight: ${profile.weight_kg}kg, Goal: ${profile.goal_type}, Protein Goal: ${profile.protein_goal_g}g.
-Guidelines:
-- Give warm, varied, personalized answers. Never repeat yourself.
-- Be concise (2-4 sentences max) but always actionable.
-- Use emojis naturally. Sound human, not robotic.
-- Reference the user's specific goals/stats when relevant.`;
+      const systemInstruction = `You are a friendly, enthusiastic, and warm AI nutrition buddy/coach for HealthyBit. The user is: ${profile.weight_kg}kg, target calorie is ${profile.daily_calorie_goal} kcal/day, goal is to ${profile.goal_type} weight, protein goal ${profile.protein_goal_g || 0}g, carbs ${profile.carbs_goal_g || 0}g, fats ${profile.fats_goal_g || 0}g.
+
+RULE: Always respond in a very friendly, supportive, and warm friend tone, but KEEP your response short and sweet (under 2-3 sentences max, under 45 words). NEVER use bullet points, lists, or headers. Speak like a real human friend in a quick chat app message. If the user speaks or queries in Hindi or Hinglish (Hindi written in English alphabet), you MUST respond in friendly Hindi or Hinglish, adhering strictly to the same formatting and length rules.`;
 
       try {
         const response = await fetch(endpoint, {
@@ -1169,76 +2468,7 @@ Guidelines:
 
 
 
-  // Guest Mode Bypass onboarding logic
-  const handleGuestAccess = () => {
-    const ftVal = heightFt !== null ? heightFt : 5;
-    const inVal = heightIn !== null ? heightIn : 6;
-    const cmVal = heightCm !== null ? heightCm : 170;
-    const yVal = birthYear !== null ? birthYear : 2001;
-    const destWeightVal = desiredWeight !== null ? desiredWeight : currentWeight;
-    const goalVal = onboardingGoal || 'maintain';
 
-    const finalWeightKg = weightUnit === 'kg' ? currentWeight : Math.round(currentWeight * 0.453592);
-    const finalTargetWeightKg = weightUnit === 'kg' ? destWeightVal : Math.round(destWeightVal * 0.453592);
-    const finalHeightCm = heightUnit === 'cm' ? cmVal : Math.round((ftVal * 12 + inVal) * 2.54);
-
-    const currentYear = new Date().getFullYear();
-    const age = currentYear - yVal;
-    let bmr = 10 * finalWeightKg + 6.25 * finalHeightCm - 5 * age;
-    if (onboardingSex === 'female') {
-      bmr -= 161;
-    } else {
-      bmr += 5;
-    }
-
-    let activityMultiplier = 1.375;
-    if (onboardingWorkouts === '0-2') {
-      activityMultiplier = 1.2;
-    } else if (onboardingWorkouts === '3-5') {
-      activityMultiplier = 1.375;
-    } else if (onboardingWorkouts === '6+') {
-      activityMultiplier = 1.55;
-    }
-
-    const tdee = Math.round(bmr * activityMultiplier);
-    let targetCalories = tdee;
-    if (goalVal === 'lose') {
-      targetCalories = Math.round(tdee - 500);
-    } else if (goalVal === 'gain') {
-      targetCalories = Math.round(tdee + 300);
-    }
-    if (targetCalories < 1200) targetCalories = 1200;
-
-    const proteinGoal = Math.round(finalWeightKg * 2.0);
-    const fatsGoal = Math.round((targetCalories * 0.25) / 9);
-    const carbsGoal = Math.round((targetCalories - (proteinGoal * 4 + fatsGoal * 9)) / 4);
-
-    const updatedProfile: Profile = {
-      email: 'guest@healthybit.app',
-      name: 'Guest User',
-      daily_calorie_goal: targetCalories,
-      protein_goal_g: proteinGoal,
-      carbs_goal_g: carbsGoal,
-      fats_goal_g: fatsGoal,
-      weight_kg: finalWeightKg,
-      height_cm: finalHeightCm,
-      target_weight_kg: finalTargetWeightKg,
-      activity_level: onboardingWorkouts === '6+' ? 'very_active' : onboardingWorkouts === '3-5' ? 'moderate' : 'sedentary',
-      goal_type: goalVal
-    };
-
-    setProfile(updatedProfile);
-    localStorage.setItem('hb_demo_profile', JSON.stringify(updatedProfile));
-    localStorage.setItem('hb_onboarding_completed', 'true');
-    localStorage.setItem('hb_onboarding_sex', onboardingSex || 'other');
-    localStorage.setItem('hb_onboarding_workouts', onboardingWorkouts || '3-5');
-    localStorage.setItem('hb_onboarding_accomplish', JSON.stringify(onboardingAccomplish));
-    localStorage.setItem('hb_onboarding_experience', onboardingExperience || 'no');
-    localStorage.setItem('hb_onboarding_add_burned_back', String(addBurnedBack));
-    localStorage.setItem('hb_onboarding_rollover_cals', String(rolloverCals));
-    localStorage.setItem('hb_onboarding_notification_consent', String(notificationConsent));
-    setOnboardingStep(-1);
-  };
 
   // Weight ruler scrolling event handler and useEffect alignment
   const handleWeightScroll = (e: React.UIEvent<HTMLDivElement>) => {
@@ -1619,150 +2849,402 @@ Guidelines:
     }
   }, [committed]);
 
+  // Forgot password flow
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isSignInLoaded) return;
+    setIsLoading(true);
+    setAuthError('');
+
+    if (!verifyingReset) {
+      try {
+        await signIn.create({
+          strategy: "reset_password_email_code",
+          identifier: email
+        });
+        setResetSent(true);
+        setVerifyingReset(true);
+      } catch (err: any) {
+        console.error("Error sending reset password code:", err);
+        if (err.errors && err.errors[0]) {
+          setAuthError(err.errors[0].longMessage || err.errors[0].message);
+        } else {
+          setAuthError(err.message || 'Failed to send reset code.');
+        }
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    try {
+      const result = await signIn.attemptFirstFactor({
+        strategy: "reset_password_email_code",
+        code: resetCode,
+        password: password
+      });
+      if (result.status === "complete") {
+        await setSignInActive({ session: result.createdSessionId });
+        setVerifyingReset(false);
+        setResetSent(false);
+        setResetCode('');
+        setEmail('');
+        setPassword('');
+      } else {
+        setAuthError(`Password reset could not be completed. Status: ${result.status}`);
+      }
+    } catch (err: any) {
+      console.error("Error verifying reset password code:", err);
+      if (err.errors && err.errors[0]) {
+        setAuthError(err.errors[0].longMessage || err.errors[0].message);
+      } else {
+        setAuthError(err.message || 'Password reset failed.');
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // Signup/Login flow inside onboarding
   const handleOnboardingSignup = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isSignInLoaded || !isSignUpLoaded) return;
+    setLoadingType('email');
     setIsLoading(true);
     setAuthError('');
 
     try {
       if (authMode === 'login') {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email,
-          password
-        });
+        if (!verifyingEmail) {
+          try {
+            console.log("Starting Clerk sign-in for:", email);
+            const { supportedFirstFactors } = await signIn.create({
+              identifier: email,
+            });
 
-        if (error) {
-          if (error.message.toLowerCase().includes('email not confirmed')) {
-            setAuthError('Your email is not verified yet. Please check your inbox and click the confirmation link, then try again.');
-          } else if (error.message.toLowerCase().includes('invalid login credentials') || error.message.toLowerCase().includes('invalid credentials')) {
-            setAuthError('Incorrect email or password. Please check your details and try again.');
-          } else {
-            setAuthError(error.message);
+            const emailFactor = supportedFirstFactors?.find(
+              (factor) => factor.strategy === 'email_code'
+            );
+
+            if (emailFactor) {
+              await signIn.prepareFirstFactor({
+                strategy: 'email_code',
+                emailAddressId: emailFactor.emailAddressId,
+              });
+              console.log("Login OTP sent successfully.");
+              setVerifyingEmail(true);
+            } else {
+              setAuthError("Email verification code is not enabled for this account.");
+            }
+          } catch (err: any) {
+            console.error("Error sending login OTP:", err);
+            if (err.errors && err.errors[0]) {
+              setAuthError(err.errors[0].longMessage || err.errors[0].message);
+            } else {
+              setAuthError(err.message || 'Login failed.');
+            }
+          } finally {
+            setLoadingType(null);
+            setIsLoading(false);
           }
-          setIsLoading(false);
           return;
         }
 
-        if (data.user) {
-          // Fetch existing profile if available
-          const { data: profileData } = await supabase
-            .from('hb_profiles')
-            .select('*')
-            .eq('id', data.user.id)
-            .maybeSingle();
+        // Login OTP verification phase
+        try {
+          console.log("Verifying login OTP code:", verificationCode);
+          const result = await signIn.attemptFirstFactor({
+            strategy: 'email_code',
+            code: verificationCode
+          });
 
-          if (profileData) {
-            setProfile(profileData);
+          if (result.status === "complete") {
+            await setSignInActive({ session: result.createdSessionId });
+            setEmail('');
+            setVerificationCode('');
+            setVerifyingEmail(false);
+          } else {
+            setAuthError(`Login could not be completed. Status: ${result.status}`);
           }
-          setUser(data.user);
-          localStorage.setItem('hb_onboarding_completed', 'true');
-          setOnboardingStep(-1);
+        } catch (err: any) {
+          console.error("Error verifying login code:", err);
+          if (err.errors && err.errors[0]) {
+            setAuthError(err.errors[0].longMessage || err.errors[0].message);
+          } else {
+            setAuthError(err.message || 'Verification failed.');
+          }
+        } finally {
+          setLoadingType(null);
+          setIsLoading(false);
         }
       } else {
-        // Step 1: Use admin edge function to create a pre-confirmed user (no email verification needed)
-        const { data: fnData, error: fnError } = await supabase.functions.invoke('direct-signup', {
-          body: { email, password, name }
-        });
+        // Register flow
+        if (!verifyingEmail) {
+          try {
+            // Check if email already exists in hb_profiles (to speed up "already exists" checks)
+            console.log("Checking if profile exists in hb_profiles first...");
+            const { data: existingProfile } = await supabase
+              .from('hb_profiles')
+              .select('id')
+              .eq('email', email)
+              .maybeSingle();
 
-        if (fnError) throw new Error(fnError.message);
-        if (fnData?.error) {
-          const msg: string = fnData.error;
-          if (msg.toLowerCase().includes('already exists')) {
-            setAuthError('An account with this email already exists. Please log in instead.');
-            setAuthMode('login');
+            if (existingProfile) {
+              setAuthError("An account with this email already exists. Please sign in instead.");
+              setLoadingType(null);
+              setIsLoading(false);
+              return;
+            }
+
+            console.log("Creating Clerk signup for:", email);
+            const cachedStrategy = localStorage.getItem('hb_clerk_signup_strategy');
+            let success = false;
+
+            if (cachedStrategy) {
+              try {
+                if (cachedStrategy === 'strategy_1') {
+                  await signUp.create({
+                    emailAddress: email,
+                    password,
+                    firstName: name || email.split('@')[0]
+                  });
+                } else if (cachedStrategy === 'strategy_2') {
+                  const generatedUsername = email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '') + Math.floor(1000 + Math.random() * 9000);
+                  await signUp.create({
+                    emailAddress: email,
+                    password,
+                    username: generatedUsername,
+                    firstName: name || email.split('@')[0]
+                  });
+                } else if (cachedStrategy === 'strategy_3') {
+                  await signUp.create({
+                    emailAddress: email,
+                    firstName: name || email.split('@')[0]
+                  });
+                } else if (cachedStrategy === 'strategy_4') {
+                  const generatedUsername = email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '') + Math.floor(1000 + Math.random() * 9000);
+                  await signUp.create({
+                    emailAddress: email,
+                    username: generatedUsername,
+                    firstName: name || email.split('@')[0]
+                  });
+                }
+                success = true;
+                console.log(`Clerk signup created successfully using cached strategy: ${cachedStrategy}`);
+              } catch (cacheErr) {
+                console.warn(`Cached strategy ${cachedStrategy} failed, trying all strategies...`, cacheErr);
+              }
+            }
+
+            if (!success) {
+              try {
+                // Strategy 1: Create user with email and password
+                await signUp.create({
+                  emailAddress: email,
+                  password,
+                  firstName: name || email.split('@')[0]
+                });
+                localStorage.setItem('hb_clerk_signup_strategy', 'strategy_1');
+              } catch (createErr: any) {
+                const firstErr = createErr.errors?.[0];
+                const errText = (firstErr?.message || firstErr?.longMessage || createErr.message || '').toLowerCase();
+                console.log("Strategy 1 signup failed. Error text:", errText);
+
+                if (firstErr && (firstErr.code === 'form_identifier_missing' || errText.includes('username'))) {
+                  // Strategy 2: Username required by configuration
+                  console.log("Retrying signup with auto-generated username...");
+                  const generatedUsername = email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '') + Math.floor(1000 + Math.random() * 9000);
+                  try {
+                    await signUp.create({
+                      emailAddress: email,
+                      password,
+                      username: generatedUsername,
+                      firstName: name || email.split('@')[0]
+                    });
+                    localStorage.setItem('hb_clerk_signup_strategy', 'strategy_2');
+                  } catch (retryErr: any) {
+                    const retryFirstErr = retryErr.errors?.[0];
+                    const retryErrText = (retryFirstErr?.message || retryFirstErr?.longMessage || retryErr.message || '').toLowerCase();
+                    if (retryErrText.includes('password')) {
+                      // Strategy 4: Username required and Passwordless (no password allowed)
+                      await signUp.create({
+                        emailAddress: email,
+                        username: generatedUsername,
+                        firstName: name || email.split('@')[0]
+                      });
+                      localStorage.setItem('hb_clerk_signup_strategy', 'strategy_4');
+                    } else {
+                      throw retryErr;
+                    }
+                  }
+                } else if (errText.includes('password') && (errText.includes('invalid') || errText.includes('not supported') || errText.includes('unknown') || errText.includes('not enabled'))) {
+                  // Strategy 3: Passwordless configuration (no password allowed)
+                  console.log("Retrying signup without password (passwordless configuration)...");
+                  await signUp.create({
+                    emailAddress: email,
+                    firstName: name || email.split('@')[0]
+                  });
+                  localStorage.setItem('hb_clerk_signup_strategy', 'strategy_3');
+                } else {
+                  throw createErr;
+                }
+              }
+            }
+            console.log("Clerk signup created successfully. Preparing email verification...");
+            await signUp.prepareEmailAddressVerification({ strategy: "email_code" });
+            console.log("Email verification code sent successfully.");
+            setVerifyingEmail(true);
+          } catch (err: any) {
+            console.error("Error creating Clerk sign up:", err);
+            const firstError = err.errors && err.errors[0];
+
+            // Detect "email already registered" — covers both plain signup and Google-linked accounts
+            const isAlreadyExists = firstError && (
+              firstError.code === 'form_identifier_exists' ||
+              firstError.code === 'email_address_taken' ||
+              firstError.code === 'oauth_email_exists' ||
+              (firstError.message || '').toLowerCase().includes('already') ||
+              (firstError.longMessage || '').toLowerCase().includes('already')
+            );
+
+            if (isAlreadyExists) {
+              setAuthError("An account with this email already exists. Please sign in instead.");
+            } else if (firstError) {
+              setAuthError(firstError.longMessage || firstError.message);
+            } else {
+              setAuthError(err.message || 'Signup failed. Please try again.');
+            }
+          } finally {
+            setLoadingType(null);
             setIsLoading(false);
-            return;
           }
-          throw new Error(msg);
+          return;
         }
 
-        // Step 2: Sign in immediately — no email confirmation required
-        const { data, error: signInError } = await supabase.auth.signInWithPassword({ email, password });
-        if (signInError) throw new Error(signInError.message);
-        if (!data.user) throw new Error('Signup succeeded but login failed. Please try logging in.');
+        // Verification phase
+        try {
+          const result = await signUp.attemptEmailAddressVerification({
+            code: verificationCode
+          });
 
-        // Step 3: Save profile with onboarding data
-        const ftVal = heightFt !== null ? heightFt : 5;
-        const inVal = heightIn !== null ? heightIn : 6;
-        const cmVal = heightCm !== null ? heightCm : 170;
-        const yVal = birthYear !== null ? birthYear : 2001;
-        const destWeightVal = desiredWeight !== null ? desiredWeight : currentWeight;
-        const goalVal = onboardingGoal || 'maintain';
+          if (result.status === "complete") {
+            // Set session active
+            await setSignUpActive({ session: result.createdSessionId });
 
-        const finalWeightKg = weightUnit === 'kg' ? currentWeight : Math.round(currentWeight * 0.453592);
-        const finalTargetWeightKg = weightUnit === 'kg' ? destWeightVal : Math.round(destWeightVal * 0.453592);
-        const finalHeightCm = heightUnit === 'cm' ? cmVal : Math.round((ftVal * 12 + inVal) * 2.54);
+            // Save profile with onboarding data
+            const ftVal = heightFt !== null ? heightFt : 5;
+            const inVal = heightIn !== null ? heightIn : 6;
+            const cmVal = heightCm !== null ? heightCm : 170;
+            const yVal = birthYear !== null ? birthYear : 2001;
+            const destWeightVal = desiredWeight !== null ? desiredWeight : currentWeight;
+            const goalVal = onboardingGoal || 'maintain';
 
-        const currentYear = new Date().getFullYear();
-        const age = currentYear - yVal;
-        let bmr = 10 * finalWeightKg + 6.25 * finalHeightCm - 5 * age;
-        if (onboardingSex === 'female') {
-          bmr -= 161;
-        } else {
-          bmr += 5;
+            const finalWeightKg = weightUnit === 'kg' ? currentWeight : Math.round(currentWeight * 0.453592);
+            const finalTargetWeightKg = weightUnit === 'kg' ? destWeightVal : Math.round(destWeightVal * 0.453592);
+            const finalHeightCm = heightUnit === 'cm' ? cmVal : Math.round((ftVal * 12 + inVal) * 2.54);
+
+            const currentYear = new Date().getFullYear();
+            const age = currentYear - yVal;
+            let bmr = 10 * finalWeightKg + 6.25 * finalHeightCm - 5 * age;
+            if (onboardingSex === 'female') {
+              bmr -= 161;
+            } else {
+              bmr += 5;
+            }
+
+            let activityMultiplier = 1.375;
+            if (onboardingWorkouts === '0-2') {
+              activityMultiplier = 1.2;
+            } else if (onboardingWorkouts === '3-5') {
+              activityMultiplier = 1.375;
+            } else if (onboardingWorkouts === '6+') {
+              activityMultiplier = 1.55;
+            }
+
+            const tdee = Math.round(bmr * activityMultiplier);
+            let targetCalories = tdee;
+            if (goalVal === 'lose') {
+              targetCalories = Math.round(tdee - 500);
+            } else if (goalVal === 'gain') {
+              targetCalories = Math.round(tdee + 300);
+            }
+            if (targetCalories < 1200) targetCalories = 1200;
+
+            const proteinGoal = Math.round(finalWeightKg * 2.0);
+            const fatsGoal = Math.round((targetCalories * 0.25) / 9);
+            const carbsGoal = Math.round((targetCalories - (proteinGoal * 4 + fatsGoal * 9)) / 4);
+
+            const newProfile: Profile = {
+              email: email,
+              name: name || email.split('@')[0],
+              daily_calorie_goal: targetCalories,
+              protein_goal_g: proteinGoal,
+              carbs_goal_g: carbsGoal,
+              fats_goal_g: fatsGoal,
+              weight_kg: finalWeightKg,
+              height_cm: finalHeightCm,
+              target_weight_kg: finalTargetWeightKg,
+              activity_level: onboardingWorkouts === '6+' ? 'very_active' : onboardingWorkouts === '3-5' ? 'moderate' : 'sedentary',
+              goal_type: goalVal,
+              is_premium: false,
+              scans_used: 0,
+              premium_until: null,
+              current_session_id: result.createdSessionId
+            };
+
+            const mappedUserId = clerkIdToUuid(result.createdUserId || '');
+
+            const { error: upsertErr } = await supabase
+              .from('hb_profiles')
+              .upsert({ id: mappedUserId, ...newProfile });
+
+            if (upsertErr) {
+              console.error("Failed to upsert profile:", upsertErr);
+            } else {
+              if (result.createdSessionId) {
+                localStorage.setItem('hb_last_session_id', result.createdSessionId);
+              }
+            }
+
+            setProfile(newProfile);
+            setUser({
+              id: mappedUserId,
+              email: email,
+              clerkId: result.createdUserId
+            });
+            localStorage.setItem('hb_onboarding_completed', 'true');
+            localStorage.setItem('hb_onboarding_sex', onboardingSex || 'other');
+            localStorage.setItem('hb_onboarding_workouts', onboardingWorkouts || '3-5');
+            localStorage.setItem('hb_onboarding_accomplish', JSON.stringify(onboardingAccomplish));
+            localStorage.setItem('hb_onboarding_experience', onboardingExperience || 'no');
+            localStorage.setItem('hb_onboarding_add_burned_back', String(addBurnedBack));
+            localStorage.setItem('hb_onboarding_rollover_cals', String(rolloverCals));
+            localStorage.setItem('hb_onboarding_notification_consent', String(notificationConsent));
+            setOnboardingStep(-1);
+            setVerifyingEmail(false);
+            setVerificationCode('');
+          } else {
+            setAuthError(`Verification could not be completed. Status: ${result.status}`);
+          }
+        } catch (err: any) {
+          console.error("Error verifying email code:", err);
+          if (err.errors && err.errors[0]) {
+            setAuthError(err.errors[0].longMessage || err.errors[0].message);
+          } else {
+            setAuthError(err.message || 'Verification failed.');
+          }
+        } finally {
+          setLoadingType(null);
+          setIsLoading(false);
         }
-
-        let activityMultiplier = 1.375;
-        if (onboardingWorkouts === '0-2') {
-          activityMultiplier = 1.2;
-        } else if (onboardingWorkouts === '3-5') {
-          activityMultiplier = 1.375;
-        } else if (onboardingWorkouts === '6+') {
-          activityMultiplier = 1.55;
-        }
-
-        const tdee = Math.round(bmr * activityMultiplier);
-        let targetCalories = tdee;
-        if (goalVal === 'lose') {
-          targetCalories = Math.round(tdee - 500);
-        } else if (goalVal === 'gain') {
-          targetCalories = Math.round(tdee + 300);
-        }
-        if (targetCalories < 1200) targetCalories = 1200;
-
-        const proteinGoal = Math.round(finalWeightKg * 2.0);
-        const fatsGoal = Math.round((targetCalories * 0.25) / 9);
-        const carbsGoal = Math.round((targetCalories - (proteinGoal * 4 + fatsGoal * 9)) / 4);
-
-        const newProfile: Profile = {
-          email: email,
-          name: name || email.split('@')[0],
-          daily_calorie_goal: targetCalories,
-          protein_goal_g: proteinGoal,
-          carbs_goal_g: carbsGoal,
-          fats_goal_g: fatsGoal,
-          weight_kg: finalWeightKg,
-          height_cm: finalHeightCm,
-          target_weight_kg: finalTargetWeightKg,
-          activity_level: onboardingWorkouts === '6+' ? 'very_active' : onboardingWorkouts === '3-5' ? 'moderate' : 'sedentary',
-          goal_type: goalVal
-        };
-
-        // Upsert profile — direct-signup creates a default row; overwrite it with real onboarding data
-        const { error: upsertErr } = await supabase
-          .from('hb_profiles')
-          .upsert({ id: data.user.id, ...newProfile });
-
-        if (upsertErr) {
-          console.error("Failed to upsert profile:", upsertErr);
-        }
-
-        setProfile(newProfile);
-        setUser(data.user);
-        localStorage.setItem('hb_onboarding_completed', 'true');
-        localStorage.setItem('hb_onboarding_sex', onboardingSex || 'other');
-        localStorage.setItem('hb_onboarding_workouts', onboardingWorkouts || '3-5');
-        localStorage.setItem('hb_onboarding_accomplish', JSON.stringify(onboardingAccomplish));
-        localStorage.setItem('hb_onboarding_experience', onboardingExperience || 'no');
-        localStorage.setItem('hb_onboarding_add_burned_back', String(addBurnedBack));
-        localStorage.setItem('hb_onboarding_rollover_cals', String(rolloverCals));
-        localStorage.setItem('hb_onboarding_notification_consent', String(notificationConsent));
-        setOnboardingStep(-1);
       }
     } catch (err: any) {
-      setAuthError(err.message);
-    } finally {
+      console.error("Error in onboarding signup/login:", err);
+      if (err.errors && err.errors[0]) {
+        setAuthError(err.errors[0].longMessage || err.errors[0].message);
+      } else {
+        setAuthError(err.message);
+      }
       setIsLoading(false);
     }
   };
@@ -3334,97 +4816,517 @@ Guidelines:
           {onboardingStep === 14 && (
             <div className="animate-slide-up" style={{ display: 'flex', flexDirection: 'column', gap: '16px', flex: 1, justifyContent: 'center' }}>
 
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '10px' }}>
-                <HealthyBitLogo size={60} />
-                <h2 style={{
-                  fontSize: '22px',
-                  fontWeight: 900,
-                  marginTop: '8px',
-                  background: 'linear-gradient(135deg, #10B981 0%, #2563EB 50%, #F97316 100%)',
-                  WebkitBackgroundClip: 'text',
-                  WebkitTextFillColor: 'transparent'
-                }}>
-                  {authMode === 'login' ? 'Welcome Back' : 'Join HealthyBit'}
-                </h2>
-              </div>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '12px', textAlign: 'center', marginBottom: '10px' }}>
-                {authMode === 'login' ? 'Sign in to access your logs and daily budget.' : 'Create your account to save your progress securely.'}
-              </p>
-
-              <form onSubmit={handleOnboardingSignup} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {authMode !== 'login' && (
-                  <input
-                    type="text"
-                    placeholder="Your Name"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    className="glass-input"
-                    required
-                  />
-                )}
-                <input
-                  type="email"
-                  placeholder="Email Address"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="glass-input"
-                  required
-                />
-                <input
-                  type="password"
-                  placeholder={authMode === 'login' ? 'Password' : 'Password (min 6 characters)'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="glass-input"
-                  required
-                />
-
-                {authError && (
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', color: 'var(--accent-red)', fontSize: '12px' }}>
-                    <AlertCircle size={14} style={{ flexShrink: 0, marginTop: '1px' }} />
-                    <span>{authError}</span>
+              {authMode === 'forgot' ? (
+                <>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '10px' }}>
+                    <HealthyBitLogo size={60} />
+                    <h2 style={{
+                      fontSize: '22px',
+                      fontWeight: 900,
+                      marginTop: '8px',
+                      background: 'linear-gradient(135deg, #10B981 0%, #2563EB 50%, #F97316 100%)',
+                      WebkitBackgroundClip: 'text',
+                      WebkitTextFillColor: 'transparent'
+                    }}>
+                      Reset Password
+                    </h2>
                   </div>
-                )}
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '12px', textAlign: 'center', marginBottom: '10px' }}>
+                    {verifyingReset
+                      ? 'Enter the 6-digit code sent to your email and your new password.'
+                      : 'Enter your email address and we\'ll send you a recovery code to reset your password.'}
+                  </p>
 
-                <button type="submit" className="btn-primary" style={{ width: '100%', marginTop: '10px' }} disabled={isLoading}>
-                  {isLoading
-                    ? (authMode === 'login' ? 'Signing In...' : 'Creating Account...')
-                    : (authMode === 'login' ? 'Sign In & Start' : 'Sign Up & Start')
-                  }
-                </button>
-              </form>
+                  {verifyingReset ? (
+                    <form onSubmit={handleForgotPassword} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      <input
+                        type="text"
+                        placeholder="6-digit Reset Code"
+                        value={resetCode}
+                        onChange={(e) => setResetCode(e.target.value)}
+                        className="glass-input"
+                        required
+                      />
+                      <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                        <input
+                          type={showPassword ? "text" : "password"}
+                          placeholder="New Password (min 6 characters)"
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          className="glass-input"
+                          style={{ width: '100%', paddingRight: '45px' }}
+                          required
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword(!showPassword)}
+                          style={{
+                            position: 'absolute',
+                            right: '12px',
+                            background: 'none',
+                            border: 'none',
+                            color: 'var(--text-secondary)',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            padding: 0
+                          }}
+                        >
+                          {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                        </button>
+                      </div>
 
-              <button
-                onClick={() => {
-                  setAuthError('');
-                  setAuthMode(authMode === 'login' ? 'signup' : 'login');
-                }}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: 'var(--accent-blue)',
-                  fontSize: '13px',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  textAlign: 'center',
-                  marginTop: '4px'
-                }}
-              >
-                {authMode === 'login'
-                  ? "New to HealthyBit? Create an account"
-                  : "Already have an account? Sign in"
-                }
-              </button>
+                      {authError && (
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', color: 'var(--accent-red)', fontSize: '12px' }}>
+                          <AlertCircle size={14} style={{ flexShrink: 0, marginTop: '1px' }} />
+                          <span>{authError}</span>
+                        </div>
+                      )}
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', margin: '10px 0' }}>
-                <div style={{ flex: 1, height: '1px', background: 'rgba(0, 0, 0, 0.08)' }} />
-                <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', fontWeight: 700 }}>OR</span>
-                <div style={{ flex: 1, height: '1px', background: 'rgba(0, 0, 0, 0.08)' }} />
-              </div>
+                      <button type="submit" className="btn-primary" style={{ width: '100%', marginTop: '10px' }} disabled={isLoading}>
+                        {isLoading ? 'Resetting Password...' : 'Reset Password'}
+                      </button>
 
-              <button onClick={handleGuestAccess} className="btn-secondary" style={{ width: '100%' }}>
-                Continue as Guest (No Account)
-              </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAuthError('');
+                          setVerifyingReset(false);
+                          setResetSent(false);
+                          setAuthMode('login');
+                        }}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--accent-blue)',
+                          fontSize: '13px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          textAlign: 'center',
+                          marginTop: '10px'
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </form>
+                  ) : (
+                    <form onSubmit={handleForgotPassword} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      <input
+                        type="email"
+                        placeholder="Email Address"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        className="glass-input"
+                        required
+                      />
+
+                      {authError && (
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', color: 'var(--accent-red)', fontSize: '12px' }}>
+                          <AlertCircle size={14} style={{ flexShrink: 0, marginTop: '1px' }} />
+                          <span>{authError}</span>
+                        </div>
+                      )}
+
+                      <button type="submit" className="btn-primary" style={{ width: '100%', marginTop: '10px' }} disabled={isLoading}>
+                        {isLoading ? 'Sending Code...' : 'Send Reset Code'}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAuthError('');
+                          setAuthMode('login');
+                        }}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--accent-blue)',
+                          fontSize: '13px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          textAlign: 'center',
+                          marginTop: '10px'
+                        }}
+                      >
+                        Back to Sign In
+                      </button>
+                    </form>
+                  )}
+                </>
+              ) : verifyingEmail ? (
+                <>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '10px' }}>
+                    <HealthyBitLogo size={60} />
+                    <h2 style={{
+                      fontSize: '22px',
+                      fontWeight: 900,
+                      marginTop: '8px',
+                      background: 'linear-gradient(135deg, #10B981 0%, #2563EB 50%, #F97316 100%)',
+                      WebkitBackgroundClip: 'text',
+                      WebkitTextFillColor: 'transparent'
+                    }}>
+                      Verify Email
+                    </h2>
+                  </div>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '12px', textAlign: 'center', marginBottom: '10px' }}>
+                    We've sent a 6-digit verification code to <strong>{email}</strong>. Enter it below to {authMode === 'login' ? 'sign in' : 'complete your registration'}.
+                  </p>
+
+                  <form onSubmit={handleOnboardingSignup} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {/* 6-Digit OTP Verification Code Input */}
+                    <div style={{ margin: '15px 0', position: 'relative', height: '52px' }}>
+                      <style>{`
+                        @keyframes otp-blink {
+                          0%, 100% { opacity: 1; }
+                          50% { opacity: 0; }
+                        }
+                      `}</style>
+                      {/* The real input is layered directly over the boxes, but fully transparent */}
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        maxLength={6}
+                        value={verificationCode}
+                        onChange={(e) => {
+                          const val = e.target.value.replace(/[^0-9]/g, '').slice(0, 6);
+                          setVerificationCode(val);
+                        }}
+                        onFocus={() => setIsInputFocused(true)}
+                        onBlur={() => setIsInputFocused(false)}
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
+                          width: '100%',
+                          height: '100%',
+                          opacity: 0,
+                          zIndex: 10,
+                          cursor: 'pointer',
+                          outline: 'none',
+                          border: 'none',
+                          background: 'transparent'
+                        }}
+                      />
+
+                      {/* Visual Boxes Grid */}
+                      <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        gap: '8px',
+                        width: '100%',
+                        height: '100%',
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        zIndex: 5,
+                        pointerEvents: 'none'
+                      }}>
+                        {Array.from({ length: 6 }).map((_, index) => {
+                          const char = verificationCode[index] || '';
+                          const isActive = index === Math.min(verificationCode.length, 5) && isInputFocused;
+                          const isFilled = char !== '';
+                          
+                          return (
+                            <div
+                              key={index}
+                              style={{
+                                flex: 1,
+                                height: '100%',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                borderRadius: '12px',
+                                border: isActive 
+                                  ? '2px solid var(--accent-blue)' 
+                                  : (isFilled ? '1.5px solid rgba(0, 0, 0, 0.25)' : '1.5px solid rgba(0, 0, 0, 0.1)'),
+                                background: isActive 
+                                  ? 'rgba(59, 130, 246, 0.06)' 
+                                  : 'rgba(0, 0, 0, 0.02)',
+                                boxShadow: isActive ? '0 0 8px rgba(59, 130, 246, 0.15)' : 'none',
+                                transition: 'all 0.15s ease-in-out',
+                                position: 'relative'
+                              }}
+                            >
+                              <span style={{
+                                fontSize: '20px',
+                                fontWeight: 700,
+                                color: '#1f2937'
+                              }}>
+                                {char}
+                              </span>
+
+                              {/* Blinking cursor for the active field if it has no character */}
+                              {isActive && char === '' && (
+                                <div style={{
+                                  width: '2px',
+                                  height: '20px',
+                                  background: 'var(--accent-blue)',
+                                  animation: 'otp-blink 1s step-end infinite'
+                                }} />
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {authError && (
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', color: 'var(--accent-red)', fontSize: '12px' }}>
+                        <AlertCircle size={14} style={{ flexShrink: 0, marginTop: '1px' }} />
+                        <span>{authError}</span>
+                      </div>
+                    )}
+
+                    <button type="submit" className="btn-primary" style={{ width: '100%', marginTop: '10px' }} disabled={isLoading || verificationCode.length < 6}>
+                      {isLoading ? 'Verifying...' : (authMode === 'login' ? 'Verify & Sign In' : 'Verify & Continue')}
+                    </button>
+                  </form>
+
+                  {/* Resend OTP with 60-second timer */}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', marginTop: '16px' }}>
+                    {/* Circular countdown ring */}
+                    <div style={{ position: 'relative', width: '56px', height: '56px' }}>
+                      <svg width="56" height="56" viewBox="0 0 56 56" style={{ transform: 'rotate(-90deg)' }}>
+                        {/* Background ring */}
+                        <circle cx="28" cy="28" r="22" fill="none" stroke="rgba(0,0,0,0.07)" strokeWidth="4" />
+                        {/* Countdown ring */}
+                        <circle
+                          cx="28" cy="28" r="22" fill="none"
+                          stroke={otpTimer > 0 ? '#2563EB' : '#10B981'}
+                          strokeWidth="4"
+                          strokeLinecap="round"
+                          strokeDasharray={`${2 * Math.PI * 22}`}
+                          strokeDashoffset={`${2 * Math.PI * 22 * (1 - otpTimer / 60)}`}
+                          style={{ transition: 'stroke-dashoffset 1s linear, stroke 0.3s' }}
+                        />
+                      </svg>
+                      {/* Center text */}
+                      <div style={{
+                        position: 'absolute', inset: 0, display: 'flex',
+                        alignItems: 'center', justifyContent: 'center',
+                        fontSize: '13px', fontWeight: 700,
+                        color: otpTimer > 0 ? '#2563EB' : '#10B981'
+                      }}>
+                        {otpTimer > 0 ? otpTimer : '✓'}
+                      </div>
+                    </div>
+
+                    {otpTimer > 0 ? (
+                      <p style={{ fontSize: '12px', color: 'var(--text-secondary)', textAlign: 'center' }}>
+                        Resend code in <strong>{otpTimer}s</strong>
+                      </p>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={handleResendOtp}
+                        disabled={isLoading}
+                        style={{
+                          background: 'linear-gradient(135deg, #10B981 0%, #2563EB 100%)',
+                          border: 'none',
+                          borderRadius: '10px',
+                          padding: '8px 20px',
+                          color: '#fff',
+                          fontSize: '13px',
+                          fontWeight: 700,
+                          cursor: isLoading ? 'not-allowed' : 'pointer',
+                          opacity: isLoading ? 0.7 : 1
+                        }}
+                      >
+                        {isLoading ? 'Sending...' : '🔁 Resend Code'}
+                      </button>
+                    )}
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      setAuthError('');
+                      setVerifyingEmail(false);
+                      setVerificationCode('');
+                    }}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--accent-blue)',
+                      fontSize: '13px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      textAlign: 'center',
+                      marginTop: '10px'
+                    }}
+                  >
+                    {authMode === 'login' ? 'Back to Sign In' : 'Back to Sign Up'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '10px' }}>
+                    <HealthyBitLogo size={60} />
+                    <h2 style={{
+                      fontSize: '22px',
+                      fontWeight: 900,
+                      marginTop: '8px',
+                      background: 'linear-gradient(135deg, #10B981 0%, #2563EB 50%, #F97316 100%)',
+                      WebkitBackgroundClip: 'text',
+                      WebkitTextFillColor: 'transparent'
+                    }}>
+                      {authMode === 'login' ? 'Welcome Back' : 'Join HealthyBit'}
+                    </h2>
+                  </div>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '12px', textAlign: 'center', marginBottom: '10px' }}>
+                    {authMode === 'login' ? 'Sign in to access your logs and daily budget.' : 'Create your account to save your progress securely.'}
+                  </p>
+
+                  <form onSubmit={handleOnboardingSignup} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {authMode !== 'login' && (
+                      <input
+                        type="text"
+                        placeholder="Your Name"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        className="glass-input"
+                        required
+                      />
+                    )}
+                    <input
+                      type="email"
+                      placeholder="Email Address"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="glass-input"
+                      required
+                    />
+                    {authMode !== 'login' && (
+                      <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                        <input
+                          type={showPassword ? "text" : "password"}
+                          placeholder="Password (min 6 characters)"
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          className="glass-input"
+                          style={{ width: '100%', paddingRight: '45px' }}
+                          required
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword(!showPassword)}
+                          style={{
+                            position: 'absolute',
+                            right: '12px',
+                            background: 'none',
+                            border: 'none',
+                            color: 'var(--text-secondary)',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            padding: 0
+                          }}
+                        >
+                          {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                        </button>
+                      </div>
+                    )}
+
+                    {authError && (
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', color: 'var(--accent-red)', fontSize: '12px' }}>
+                        <AlertCircle size={14} style={{ flexShrink: 0, marginTop: '1px' }} />
+                        <span>{authError}</span>
+                      </div>
+                    )}
+
+                    <button type="submit" className="btn-primary" style={{ width: '100%', marginTop: '10px' }} disabled={isLoading}>
+                      {isLoading && loadingType === 'email'
+                        ? (authMode === 'login' ? 'Signing In...' : 'Creating Account...')
+                        : (authMode === 'login' ? 'Sign In & Start' : 'Sign Up & Start')
+                      }
+                    </button>
+                    <div style={{
+                      marginTop: '10px',
+                      background: 'rgba(59, 130, 246, 0.06)',
+                      border: '1px solid rgba(59, 130, 246, 0.15)',
+                      padding: '8px 12px',
+                      borderRadius: '12px',
+                      fontSize: '11px',
+                      color: '#a0c4ff',
+                      lineHeight: '1.4',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px'
+                    }}>
+                      <span style={{ fontSize: '14px' }}>💡</span>
+                      <span><strong>Fastest Login:</strong> Clerk email verification codes may take up to 60s. We highly recommend using <strong>Continue with Google</strong> below for instant access!</span>
+                    </div>
+                  </form>
+
+                  <div style={{ display: 'flex', alignItems: 'center', margin: '15px 0' }}>
+                    <div style={{ flex: 1, height: '1px', background: 'rgba(0, 0, 0, 0.08)' }} />
+                    <span style={{ margin: '0 10px', fontSize: '12px', color: 'rgba(0, 0, 0, 0.4)', fontWeight: 500 }}>or</span>
+                    <div style={{ flex: 1, height: '1px', background: 'rgba(0, 0, 0, 0.08)' }} />
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleGoogleSignIn}
+                    disabled={isLoading}
+                    style={{
+                      width: '100%',
+                      height: '48px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '10px',
+                      borderRadius: '14px',
+                      border: '1.5px solid rgba(0, 0, 0, 0.08)',
+                      background: '#ffffff',
+                      color: '#1f2937',
+                      fontWeight: 600,
+                      fontSize: '15px',
+                      cursor: 'pointer',
+                      boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04)',
+                      transition: 'all 0.2s ease-in-out'
+                    }}
+                    onMouseOver={(e) => {
+                      e.currentTarget.style.background = '#f9fafb';
+                      e.currentTarget.style.border = '1.5px solid rgba(0, 0, 0, 0.15)';
+                      e.currentTarget.style.transform = 'translateY(-1px)';
+                      e.currentTarget.style.boxShadow = '0 4px 6px rgba(0, 0, 0, 0.06)';
+                    }}
+                    onMouseOut={(e) => {
+                      e.currentTarget.style.background = '#ffffff';
+                      e.currentTarget.style.border = '1.5px solid rgba(0, 0, 0, 0.08)';
+                      e.currentTarget.style.transform = 'translateY(0)';
+                      e.currentTarget.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.04)';
+                    }}
+                  >
+                    <GoogleIcon size={22} />
+                    {isLoading && loadingType === 'google' ? 'Redirecting...' : 'Continue with Google'}
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setAuthError('');
+                      setAuthMode(authMode === 'login' ? 'signup' : 'login');
+                    }}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--accent-blue)',
+                      fontSize: '13px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      textAlign: 'center',
+                      marginTop: '4px'
+                    }}
+                  >
+                    {authMode === 'login'
+                      ? "New to HealthyBit? Create an account"
+                      : "Already have an account? Sign in"
+                    }
+                  </button>
+                </>
+              )}
             </div>
           )}
 
@@ -3458,6 +5360,88 @@ Guidelines:
   const caloriePercent = Math.min(100, (caloriesConsumed / profile.daily_calorie_goal) * 100);
   const strokeDashoffset = ringCircumference - (caloriePercent / 100) * ringCircumference;
 
+  if (sessionConflict) {
+    return (
+      <div style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        background: 'rgba(2, 6, 23, 0.9)',
+        backdropFilter: 'blur(16px)',
+        WebkitBackdropFilter: 'blur(16px)',
+        zIndex: 99999,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '24px',
+        fontFamily: 'system-ui, -apple-system, sans-serif'
+      }}>
+        <div style={{
+          background: 'linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.9))',
+          border: '1px solid rgba(239, 68, 68, 0.3)',
+          borderRadius: '24px',
+          padding: '40px 24px 32px 24px',
+          maxWidth: '400px',
+          width: '100%',
+          textAlign: 'center',
+          boxShadow: '0 20px 50px rgba(0, 0, 0, 0.6), 0 0 30px rgba(239, 68, 68, 0.1)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: '24px'
+        }}>
+          <div style={{
+            width: '64px',
+            height: '64px',
+            borderRadius: '20px',
+            background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.15) 0%, rgba(220, 38, 38, 0.05) 100%)',
+            border: '1px solid rgba(239, 68, 68, 0.3)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: '0 8px 24px rgba(239, 68, 68, 0.15)'
+          }}>
+            <AlertCircle size={32} style={{ color: '#ef4444' }} />
+          </div>
+          
+          <div>
+            <h3 style={{ fontSize: '22px', fontWeight: 800, color: '#ef4444', margin: 0, letterSpacing: '-0.025em' }}>
+              Session Conflict Detected
+            </h3>
+            <p style={{ fontSize: '14px', color: 'rgba(255, 255, 255, 0.7)', marginTop: '12px', lineHeight: '1.6' }}>
+              Another device has logged into this account. To keep your data secure, this session has been disconnected.
+            </p>
+          </div>
+
+          <button
+            onClick={async () => {
+              setSessionConflict(false);
+              await handleLogout();
+            }}
+            style={{
+              background: 'linear-gradient(135deg, #ef4444, #dc2626)',
+              color: '#fff',
+              border: 'none',
+              fontWeight: 700,
+              fontSize: '15px',
+              padding: '14px 28px',
+              borderRadius: '14px',
+              cursor: 'pointer',
+              boxShadow: '0 4px 12px rgba(239, 68, 68, 0.3)',
+              transition: 'all 0.2s',
+              width: '100%',
+              fontFamily: 'inherit'
+            }}
+          >
+            Understood & Sign Out
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (onboardingStep !== -1) {
     return renderOnboarding();
   }
@@ -3473,7 +5457,34 @@ Guidelines:
             {/* Header Title with month/year */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div>
-                <h1 style={{ fontSize: '24px', fontWeight: 800 }}>AI Calorie</h1>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <h1 style={{
+                    fontSize: '24px',
+                    fontWeight: 800,
+                    background: profile.is_premium
+                      ? 'linear-gradient(135deg, #f59e0b 0%, #fbbf24 100%)'
+                      : 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
+                    WebkitBackgroundClip: 'text',
+                    WebkitTextFillColor: 'transparent',
+                  }}>
+                    AI Calorie
+                  </h1>
+                  {profile.is_premium && (
+                    <span style={{
+                      background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                      color: '#fff',
+                      fontSize: '10px',
+                      fontWeight: 900,
+                      padding: '2px 8px',
+                      borderRadius: '8px',
+                      textTransform: 'uppercase',
+                      boxShadow: '0 0 10px rgba(245, 158, 11, 0.4)',
+                      letterSpacing: '0.5px'
+                    }}>
+                      Pro
+                    </span>
+                  )}
+                </div>
                 <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>Track Your Daily Goals</p>
               </div>
               <div style={{
@@ -3593,8 +5604,12 @@ Guidelines:
               onClick={() => setShowAICoach(true)}
               className="glass-card"
               style={{
-                background: 'linear-gradient(135deg, rgba(37,99,235,0.15) 0%, rgba(249,115,22,0.05) 100%)',
-                borderColor: 'rgba(37, 99, 235, 0.25)',
+                background: profile.is_premium
+                  ? 'linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(249, 115, 22, 0.05) 100%)'
+                  : 'linear-gradient(135deg, rgba(37,99,235,0.15) 0%, rgba(249,115,22,0.05) 100%)',
+                borderColor: profile.is_premium
+                  ? 'rgba(245, 158, 11, 0.35)'
+                  : 'rgba(37, 99, 235, 0.25)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
@@ -3604,14 +5619,16 @@ Guidelines:
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <div style={{
-                  background: 'var(--accent-blue)',
+                  background: profile.is_premium ? 'var(--accent-yellow)' : 'var(--accent-blue)',
                   width: '40px',
                   height: '40px',
                   borderRadius: '50%',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  boxShadow: '0 0 15px var(--accent-blue-glow)'
+                  boxShadow: profile.is_premium
+                    ? '0 0 15px rgba(245, 158, 11, 0.5)'
+                    : '0 0 15px var(--accent-blue-glow)'
                 }}>
                   <Sparkles size={20} color="#fff" />
                 </div>
@@ -3797,6 +5814,92 @@ Guidelines:
               <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>Monitor weight metrics & nutritional consumption</p>
             </div>
 
+            {/* Today's Calorie Summary Row (Goes to the Top with sliding animation) */}
+            {(() => {
+              const goal = profile.daily_calorie_goal || 2200;
+              const consumed = foodLogs.filter(dateLogFilter).reduce((sum, item) => sum + item.calories, 0);
+              const remaining = goal - consumed;
+              const percent = Math.round((consumed / goal) * 100);
+
+              let statusText = 'Safe';
+              let statusColor = '#10b981';
+              let statusBg = 'rgba(16, 185, 129, 0.15)';
+              let statusBorder = '1px solid rgba(16, 185, 129, 0.2)';
+
+              if (consumed > goal) {
+                statusText = 'Limit Reached';
+                statusColor = 'var(--accent-red)';
+                statusBg = 'rgba(239, 68, 68, 0.15)';
+                statusBorder = '1px solid rgba(239, 68, 68, 0.2)';
+              } else if (remaining < 300) {
+                statusText = 'Near Goal';
+                statusColor = '#f59e0b';
+                statusBg = 'rgba(245, 158, 11, 0.15)';
+                statusBorder = '1px solid rgba(245, 158, 11, 0.2)';
+              }
+
+              return (
+                <div 
+                  className="glass-card animate-row-top" 
+                  style={{ 
+                    display: 'flex', 
+                    flexDirection: 'column', 
+                    gap: '12px', 
+                    padding: '20px',
+                    background: consumed > goal 
+                      ? 'linear-gradient(135deg, rgba(239, 68, 68, 0.08) 0%, rgba(220, 38, 38, 0.03) 100%)'
+                      : 'linear-gradient(135deg, rgba(37, 99, 235, 0.08) 0%, rgba(96, 165, 250, 0.03) 100%)',
+                    borderColor: consumed > goal ? 'rgba(239, 68, 68, 0.2)' : 'rgba(37, 99, 235, 0.2)',
+                    position: 'relative',
+                    overflow: 'hidden'
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <span style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Today's Energy Balance</span>
+                      <h3 style={{ fontSize: '20px', fontWeight: 800, marginTop: '4px' }}>
+                        {consumed} <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-secondary)' }}>/ {goal} kcal</span>
+                      </h3>
+                    </div>
+                    <div style={{
+                      padding: '6px 12px',
+                      borderRadius: '20px',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      background: statusBg,
+                      color: statusColor,
+                      border: statusBorder,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.5px'
+                    }}>
+                      {statusText}
+                    </div>
+                  </div>
+
+                  {/* Progress bar container */}
+                  <div style={{ position: 'relative', width: '100%', height: '8px', background: 'rgba(0,0,0,0.06)', borderRadius: '4px', overflow: 'hidden' }}>
+                    <div 
+                      style={{ 
+                        height: '100%', 
+                        background: consumed > goal 
+                          ? 'linear-gradient(90deg, #ef4444, #f87171)' 
+                          : 'linear-gradient(90deg, #2563eb, #60a5fa)',
+                        width: `${animatedCalorieProgress}%`,
+                        transition: 'width 1.2s cubic-bezier(0.16, 1, 0.3, 1)',
+                        borderRadius: '4px'
+                      }} 
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                    <span>0%</span>
+                    <span>{percent}% of daily goal</span>
+                    <span>100%</span>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Goal Weight Card */}
             <div className="glass-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
@@ -3966,14 +6069,117 @@ Guidelines:
 
         {/* Tab 3: Live Food Scan */}
         {activeTab === 'diet' && (
-          <div className="animate-slide-up" style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: '100%', minHeight: 0 }}>
+          !profile.is_premium ? (
+            <div className="animate-slide-up glass-card" style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              textAlign: 'center',
+              padding: '40px 24px',
+              gap: '24px',
+              borderRadius: '24px',
+              border: '1px solid rgba(255, 193, 7, 0.2)',
+              background: 'linear-gradient(135deg, rgba(15, 23, 42, 0.8), rgba(30, 41, 59, 0.8))',
+              boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
+              margin: 'auto 0'
+            }}>
+              <div style={{
+                width: '72px',
+                height: '72px',
+                borderRadius: '50%',
+                background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 0 20px rgba(245, 158, 11, 0.4)',
+                fontSize: '32px'
+              }}>
+                ⭐
+              </div>
+              <div>
+                <h1 style={{ fontSize: '24px', fontWeight: 800, color: '#f59e0b', margin: '0 0 8px 0' }}>Live Scan is a Premium Feature</h1>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '14px', maxWidth: '380px', margin: '0 auto', lineHeight: '1.5' }}>
+                  Get real-time food ingredient and nutrition analysis directly from your video viewfinder. Unlock HealthyBit Premium to access this feature.
+                </p>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', width: '100%', maxWidth: '320px' }}>
+                <button
+                  onClick={() => setShowPaywall(true)}
+                  className="btn-primary"
+                  style={{
+                    background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                    color: '#fff',
+                    border: 'none',
+                    fontWeight: 700,
+                    fontSize: '15px',
+                    padding: '14px',
+                    borderRadius: '12px',
+                    cursor: 'pointer',
+                    boxShadow: '0 4px 15px rgba(245, 158, 11, 0.3)',
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  Unlock Premium Now
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="animate-slide-up" style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: '100%', minHeight: 0 }}>
             {/* Header */}
-            <div>
-              <h1 style={{ fontSize: '24px', fontWeight: 800 }}>Live Food Scan</h1>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>Point your camera at food for real-time analysis</p>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+              <div>
+                <h1 style={{ fontSize: '24px', fontWeight: 800 }}>Live Food Scan</h1>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>Point your camera at food for real-time analysis</p>
+              </div>
+              
+              {/* Language Toggle Control */}
+              <div style={{
+                display: 'flex',
+                background: 'rgba(255, 255, 255, 0.05)',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                padding: '4px',
+                borderRadius: '12px',
+                gap: '4px'
+              }}>
+                <button
+                  onClick={() => handleVoiceLangChange('en')}
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    background: aiVoiceLanguage === 'en' ? 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)' : 'transparent',
+                    color: aiVoiceLanguage === 'en' ? '#fff' : 'rgba(255,255,255,0.6)',
+                    transition: 'all 0.2s',
+                    boxShadow: aiVoiceLanguage === 'en' ? '0 2px 8px rgba(59,130,246,0.3)' : 'none'
+                  }}
+                >
+                  English 🇺🇸 (Female)
+                </button>
+                <button
+                  onClick={() => handleVoiceLangChange('hi')}
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    background: aiVoiceLanguage === 'hi' ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)' : 'transparent',
+                    color: aiVoiceLanguage === 'hi' ? '#fff' : 'rgba(255,255,255,0.6)',
+                    transition: 'all 0.2s',
+                    boxShadow: aiVoiceLanguage === 'hi' ? '0 2px 8px rgba(16,185,129,0.3)' : 'none'
+                  }}
+                >
+                  हिन्दी 🇮🇳 (Female)
+                </button>
+              </div>
             </div>
 
-            {/* Viewfinder Container */}
             <div style={{
               position: 'relative',
               flex: 1,
@@ -3986,9 +6192,9 @@ Guidelines:
               justifyContent: 'center',
               alignItems: 'center',
               boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
-              minHeight: '260px'
+              minHeight: '320px'
             }}>
-              {/* CAMERA FEED */}
+              {/* CAMERA FEED — always mounted so liveVideoRef is available when stream is assigned */}
               <video
                 ref={liveVideoRef}
                 autoPlay
@@ -4000,269 +6206,676 @@ Guidelines:
                   objectFit: 'cover',
                   position: 'absolute',
                   top: 0,
-                  left: 0
+                  left: 0,
+                  opacity: cameraPermissionStatus === 'granted' && !isCameraInitializing ? 1 : 0,
+                  transition: 'opacity 0.3s ease-in-out',
+                  zIndex: 1
                 }}
               />
 
-              {/* Futuristic Viewfinder overlays */}
-              <div style={{
-                position: 'absolute',
-                top: '16px',
-                left: '16px',
-                background: 'rgba(15, 23, 42, 0.75)',
-                backdropFilter: 'blur(8px)',
-                border: '1px solid rgba(255,255,255,0.08)',
-                padding: '6px 12px',
-                borderRadius: '12px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                zIndex: 10
-              }}>
+              {isCameraInitializing ? (
                 <div style={{
-                  width: '6px',
-                  height: '6px',
-                  borderRadius: '50%',
-                  background: isAnalyzingFrame ? '#e11d48' : '#10b981',
-                  animation: 'pulse 1.5s infinite',
-                  boxShadow: isAnalyzingFrame ? '0 0 8px #e11d48' : '0 0 8px #10b981'
-                }} />
-                <span style={{ fontSize: '11px', fontWeight: 700, color: '#fff' }}>
-                  {isAnalyzingFrame ? 'ANALYZING...' : 'LIVE FEED'}
-                </span>
-              </div>
-
-              {/* Laser scan lines when scanning */}
-              {isAnalyzingFrame && (
-                <div style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  textAlign: 'center',
+                  background: '#020617',
                   width: '100%',
                   height: '100%',
-                  background: 'linear-gradient(rgba(37, 99, 235, 0.1) 0%, rgba(37, 99, 235, 0.25) 50%, rgba(37, 99, 235, 0.1) 100%)',
-                  zIndex: 5,
-                  pointerEvents: 'none',
-                  animation: 'laserScan 2s linear infinite'
+                  minHeight: '320px',
+                  position: 'relative',
+                  zIndex: 5
                 }}>
                   <div style={{
-                    width: '100%',
-                    height: '2px',
-                    background: 'var(--accent-blue)',
-                    boxShadow: '0 0 15px var(--accent-blue), 0 0 30px var(--accent-blue)',
-                    position: 'absolute',
-                    top: '50%'
+                    width: '32px',
+                    height: '32px',
+                    border: '3px solid rgba(255,255,255,0.1)',
+                    borderTopColor: '#60a5fa',
+                    borderRadius: '50%',
+                    animation: 'spin 0.8s linear infinite',
+                    marginBottom: '12px'
                   }} />
+                  <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.4)', fontWeight: 500 }}>
+                    Connecting to camera...
+                  </span>
                 </div>
-              )}
-
-              {/* Viewfinder Target corners */}
-              <div style={{ position: 'absolute', top: '30px', left: '30px', width: '20px', height: '20px', borderTop: '3px solid #fff', borderLeft: '3px solid #fff', opacity: 0.6 }} />
-              <div style={{ position: 'absolute', top: '30px', right: '30px', width: '20px', height: '20px', borderTop: '3px solid #fff', borderRight: '3px solid #fff', opacity: 0.6 }} />
-              <div style={{ position: 'absolute', bottom: '30px', left: '30px', width: '20px', height: '20px', borderBottom: '3px solid #fff', borderLeft: '3px solid #fff', opacity: 0.6 }} />
-              <div style={{ position: 'absolute', bottom: '30px', right: '30px', width: '20px', height: '20px', borderBottom: '3px solid #fff', borderRight: '3px solid #fff', opacity: 0.6 }} />
-
-              {/* Center crosshair */}
-              <div style={{
-                position: 'absolute',
-                width: '30px',
-                height: '30px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                opacity: 0.35,
-                pointerEvents: 'none'
-              }}>
-                <div style={{ width: '10px', height: '2px', background: '#fff' }} />
-                <div style={{ height: '10px', width: '2px', background: '#fff', position: 'absolute' }} />
-              </div>
-
-              {/* HUD scan trigger button overlay */}
-              {!liveScanDetectedFood && !isAnalyzingFrame && (
-                <button
-                  onClick={handleLiveScan}
-                  style={{
-                    position: 'absolute',
-                    bottom: '24px',
-                    padding: '12px 24px',
-                    background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
-                    border: 'none',
-                    color: '#fff',
+              ) : cameraPermissionStatus === 'denied' || cameraPermissionStatus === 'unsupported' ? (
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '32px 24px',
+                  textAlign: 'center',
+                  zIndex: 10,
+                  maxWidth: '380px'
+                }}>
+                  <div style={{
+                    width: '64px',
+                    height: '64px',
                     borderRadius: '20px',
-                    fontSize: '13px',
-                    fontWeight: 800,
-                    cursor: 'pointer',
-                    boxShadow: '0 8px 24px rgba(37,99,235,0.4)',
+                    background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.1) 0%, rgba(220, 38, 38, 0.1) 100%)',
+                    border: '1px solid rgba(239,68,68,0.2)',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '8px',
-                    zIndex: 10
-                  }}
-                >
-                  <Sparkles size={16} />
-                  <span>Scan Food Frame</span>
-                </button>
-              )}
+                    justifyContent: 'center',
+                    marginBottom: '16px',
+                    boxShadow: '0 8px 24px rgba(239,68,68,0.1)'
+                  }}>
+                    <CameraOff size={28} style={{ color: '#f87171' }} />
+                  </div>
+                  <h2 style={{ fontSize: '18px', fontWeight: 700, marginBottom: '8px', color: '#fff' }}>
+                    {cameraPermissionStatus === 'unsupported' ? 'Live Camera Unavailable' : 'Camera Blocked'}
+                  </h2>
+                  <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '20px', lineHeight: 1.5 }}>
+                    {cameraPermissionStatus === 'unsupported'
+                      ? 'Live scanner requires a secure HTTPS connection. Please capture a photo using your native camera or choose from gallery.'
+                      : 'Please enable camera permissions in your browser settings to scan your food, or use native upload below.'
+                    }
+                  </p>
 
-              {/* Active model badge at bottom right */}
-              <div style={{
-                position: 'absolute',
-                bottom: '12px',
-                right: '12px',
-                fontSize: '9px',
-                color: 'rgba(255,255,255,0.3)',
-                fontWeight: 600,
-                textTransform: 'uppercase',
-                letterSpacing: '0.5px'
-              }}>
-                Powered by gemini-3-flash-live
-              </div>
-            </div>
-
-            {/* Scanner Status and Detected Food Card Overlay */}
-            {isAnalyzingFrame && (
-              <div className="glass-card" style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                padding: '20px',
-                gap: '12px'
-              }}>
-                <div style={{ width: '24px', height: '24px', border: '3px solid rgba(37,99,235,0.2)', borderTopColor: 'var(--accent-blue)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-                <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)' }}>AI analyzing live frame...</span>
-              </div>
-            )}
-
-            {liveScanDetectedFood && (
-              <div className="glass-card animate-slide-up" style={{
-                background: 'linear-gradient(135deg, rgba(37, 99, 235, 0.08) 0%, rgba(15, 23, 42, 0.6) 100%)',
-                border: '1px solid rgba(37, 99, 235, 0.2)',
-                boxShadow: '0 12px 32px rgba(0,0,0,0.4)',
-                padding: '20px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '14px',
-                marginBottom: '8px'
-              }}>
-                {/* Food Name & Health Score */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <div>
-                      <span style={{ fontSize: '11px', color: 'var(--accent-blue)', fontWeight: 700, letterSpacing: '0.5px', textTransform: 'uppercase' }}>Detected Meal</span>
-                      <h3 style={{ fontSize: '18px', fontWeight: 800, color: '#fff', marginTop: '2px' }}>{liveScanDetectedFood.foodName}</h3>
-                    </div>
+                  {/* Two Main Call-To-Action Capture Buttons */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', width: '100%', marginBottom: '20px' }}>
                     <button
-                      onClick={() => speakFoodAnalysis(liveScanDetectedFood)}
+                      onClick={() => nativeCameraInputRef.current?.click()}
                       style={{
-                        background: 'rgba(255, 255, 255, 0.08)',
-                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                        width: '100%',
+                        padding: '14px 20px',
+                        background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                        border: 'none',
                         color: '#fff',
-                        width: '32px',
-                        height: '32px',
-                        borderRadius: '50%',
+                        borderRadius: '14px',
+                        fontWeight: 700,
+                        fontSize: '14px',
+                        cursor: 'pointer',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        cursor: 'pointer',
-                        marginTop: '14px',
-                        transition: 'all 0.2s'
+                        gap: '8px',
+                        boxShadow: '0 4px 12px rgba(16,185,129,0.2)'
                       }}
-                      title="Speak macro summary aloud"
-                      onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)')}
-                      onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)')}
                     >
-                      <Volume2 size={16} />
+                      <Camera size={18} /> Take Photo (Native Camera)
+                    </button>
+
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      style={{
+                        width: '100%',
+                        padding: '14px 20px',
+                        background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                        border: 'none',
+                        color: '#fff',
+                        borderRadius: '14px',
+                        fontWeight: 700,
+                        fontSize: '14px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '8px',
+                        boxShadow: '0 4px 12px rgba(37,99,235,0.2)'
+                      }}
+                    >
+                      <Plus size={18} /> Choose from Gallery
                     </button>
                   </div>
 
-                  {/* Health Score Pill */}
-                  {liveScanDetectedFood.healthScore && (
+                  {cameraPermissionStatus === 'denied' && (
                     <div style={{
-                      background: liveScanDetectedFood.healthScore >= 75
-                        ? 'rgba(16,185,129,0.15)'
-                        : liveScanDetectedFood.healthScore >= 50
-                          ? 'rgba(245,158,11,0.15)'
-                          : 'rgba(239,68,68,0.15)',
-                      border: `1px solid ${liveScanDetectedFood.healthScore >= 75 ? '#10b981' : liveScanDetectedFood.healthScore >= 50 ? '#f59e0b' : '#ef4444'}`,
-                      color: liveScanDetectedFood.healthScore >= 75 ? '#10b981' : liveScanDetectedFood.healthScore >= 50 ? '#f59e0b' : '#ef4444',
-                      padding: '4px 10px',
-                      borderRadius: '20px',
-                      fontSize: '11px',
-                      fontWeight: 800
+                      background: 'rgba(15,23,42,0.6)',
+                      border: '1px solid rgba(255,255,255,0.05)',
+                      borderRadius: '16px',
+                      padding: '16px',
+                      textAlign: 'left',
+                      width: '100%',
+                      marginBottom: '24px',
+                      fontSize: '12px',
+                      color: '#94a3b8',
+                      lineHeight: 1.6
                     }}>
-                      {liveScanDetectedFood.healthScore} Health Score
+                      <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                        <span style={{ color: '#60a5fa', fontWeight: 700 }}>1.</span>
+                        <span>Tap the lock/settings icon 🔒 next to the web address bar.</span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                        <span style={{ color: '#60a5fa', fontWeight: 700 }}>2.</span>
+                        <span>Toggle the <b>Camera</b> setting to <b>"Allow"</b>.</span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <span style={{ color: '#60a5fa', fontWeight: 700 }}>3.</span>
+                        <span>Refresh this page to re-initialize scanner.</span>
+                      </div>
                     </div>
                   )}
-                </div>
 
-                {/* Energy Calorie bar and summary */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.03)', padding: '10px 14px', borderRadius: '12px' }}>
-                  <Flame size={18} color="var(--accent-orange)" fill="var(--accent-orange)" />
-                  <span style={{ fontSize: '15px', fontWeight: 800, color: '#fff' }}>{liveScanDetectedFood.calories} kcal</span>
-                  <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Estimated Energy</span>
-                </div>
-
-                {/* Macros grid with custom color progress bars */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
-                  {/* Protein */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px' }}>
-                      <span style={{ color: 'var(--text-tertiary)', fontWeight: 500 }}>Protein</span>
-                      <span style={{ color: '#f87171', fontWeight: 700 }}>{liveScanDetectedFood.protein}g</span>
-                    </div>
-                    <div style={{ width: '100%', height: '4px', background: 'rgba(239,68,68,0.1)', borderRadius: '2px', overflow: 'hidden' }}>
-                      <div style={{ height: '100%', background: '#ef4444', width: `${Math.min(100, (liveScanDetectedFood.protein / 50) * 100)}%` }} />
-                    </div>
-                  </div>
-
-                  {/* Carbs */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px' }}>
-                      <span style={{ color: 'var(--text-tertiary)', fontWeight: 500 }}>Carbs</span>
-                      <span style={{ color: '#fbbf24', fontWeight: 700 }}>{liveScanDetectedFood.carbs}g</span>
-                    </div>
-                    <div style={{ width: '100%', height: '4px', background: 'rgba(245,158,11,0.1)', borderRadius: '2px', overflow: 'hidden' }}>
-                      <div style={{ height: '100%', background: '#f59e0b', width: `${Math.min(100, (liveScanDetectedFood.carbs / 100) * 100)}%` }} />
-                    </div>
-                  </div>
-
-                  {/* Fats */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px' }}>
-                      <span style={{ color: 'var(--text-tertiary)', fontWeight: 500 }}>Fats</span>
-                      <span style={{ color: '#34d399', fontWeight: 700 }}>{liveScanDetectedFood.fats}g</span>
-                    </div>
-                    <div style={{ width: '100%', height: '4px', background: 'rgba(16,185,129,0.1)', borderRadius: '2px', overflow: 'hidden' }}>
-                      <div style={{ height: '100%', background: '#10b981', width: `${Math.min(100, (liveScanDetectedFood.fats / 40) * 100)}%` }} />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Log button and Clear button */}
-                <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
                   <button
-                    onClick={() => {
-                      playFeedback();
-                      setLiveScanDetectedFood(null);
+                    onClick={() => window.location.reload()}
+                    style={{
+                      padding: '10px 24px',
+                      background: 'rgba(255,255,255,0.08)',
+                      border: '1px solid rgba(255,255,255,0.1)',
+                      color: '#fff',
+                      borderRadius: '12px',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                      width: '100%'
                     }}
-                    className="btn-secondary"
-                    style={{ flex: 1, padding: '12px' }}
                   >
-                    Clear Scan
-                  </button>
-                  <button
-                    onClick={handleSaveLiveScannedFood}
-                    className="btn-primary"
-                    style={{ flex: 2, padding: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
-                  >
-                    <Check size={16} />
-                    <span>Log to Diary</span>
+                    Reload Page
                   </button>
                 </div>
-              </div>
-            )}
+              ) : (
+                <>
+                  {cameraPermissionStatus === 'granted' ? (
+                    <>
+                      {/* Futuristic Viewfinder overlays */}
+                      <div style={{
+                        position: 'absolute',
+                        top: '16px',
+                        left: '16px',
+                        background: 'rgba(15, 23, 42, 0.75)',
+                        backdropFilter: 'blur(8px)',
+                        border: '1px solid rgba(255,255,255,0.08)',
+                        padding: '6px 12px',
+                        borderRadius: '12px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        zIndex: 10
+                      }}>
+                        <div style={{
+                          width: '6px',
+                          height: '6px',
+                          borderRadius: '50%',
+                          background: isAnalyzingFrame ? '#e11d48' : '#10b981',
+                          animation: 'pulse 1.5s infinite',
+                          boxShadow: isAnalyzingFrame ? '0 0 8px #e11d48' : '0 0 8px #10b981'
+                        }} />
+                        <span style={{ fontSize: '11px', fontWeight: 700, color: '#fff' }}>
+                          {isAnalyzingFrame ? 'ANALYZING...' : 'LIVE FEED'}
+                        </span>
+                      </div>
+
+                      {/* Shaking Warning Indicator */}
+                      {isShaking && (
+                        <div style={{
+                          position: 'absolute',
+                          top: '64px',
+                          left: '50%',
+                          transform: 'translateX(-50%)',
+                          background: 'rgba(239, 68, 68, 0.92)',
+                          backdropFilter: 'blur(8px)',
+                          border: '1px solid rgba(255,255,255,0.2)',
+                          padding: '8px 16px',
+                          borderRadius: '16px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          zIndex: 30,
+                          boxShadow: '0 8px 24px rgba(220, 38, 38, 0.4)',
+                          width: '80%',
+                          justifyContent: 'center',
+                          color: '#fff',
+                          animation: 'pulse 1s infinite'
+                        }}>
+                          <span style={{ fontSize: '12px', fontWeight: 800, textAlign: 'center' }}>
+                            ⚠️ Hold Stable (Shaking Detected)
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Laser scan lines when scanning */}
+                      {isAnalyzingFrame && (
+                        <div style={{
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
+                          width: '100%',
+                          height: '100%',
+                          background: 'linear-gradient(rgba(37, 99, 235, 0.1) 0%, rgba(37, 99, 235, 0.25) 50%, rgba(37, 99, 235, 0.1) 100%)',
+                          zIndex: 5,
+                          pointerEvents: 'none',
+                          animation: 'laserScan 2s linear infinite'
+                        }}>
+                          <div style={{
+                            width: '100%',
+                            height: '2px',
+                            background: 'var(--accent-blue)',
+                            boxShadow: '0 0 15px var(--accent-blue), 0 0 30px var(--accent-blue)',
+                            position: 'absolute',
+                            top: '50%'
+                          }} />
+                        </div>
+                      )}
+
+                      {/* Viewfinder Target corners */}
+                      <div style={{ position: 'absolute', top: '30px', left: '30px', width: '20px', height: '20px', borderTop: '3px solid #fff', borderLeft: '3px solid #fff', opacity: 0.6 }} />
+                      <div style={{ position: 'absolute', top: '30px', right: '30px', width: '20px', height: '20px', borderTop: '3px solid #fff', borderRight: '3px solid #fff', opacity: 0.6 }} />
+                      <div style={{ position: 'absolute', bottom: '30px', left: '30px', width: '20px', height: '20px', borderBottom: '3px solid #fff', borderLeft: '3px solid #fff', opacity: 0.6 }} />
+                      <div style={{ position: 'absolute', bottom: '30px', right: '30px', width: '20px', height: '20px', borderBottom: '3px solid #fff', borderRight: '3px solid #fff', opacity: 0.6 }} />
+
+                      {/* Center crosshair */}
+                      <div style={{
+                        position: 'absolute',
+                        width: '30px',
+                        height: '30px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        opacity: 0.35,
+                        pointerEvents: 'none'
+                      }}>
+                        <div style={{ width: '10px', height: '2px', background: '#fff' }} />
+                        <div style={{ height: '10px', width: '2px', background: '#fff', position: 'absolute' }} />
+                      </div>
+
+                      {/* HUD scan trigger button overlay */}
+                      {!liveScanDetectedFood && !isAnalyzingFrame && (
+                        <button
+                          onClick={() => handleLiveScan(false)}
+                          style={{
+                            position: 'absolute',
+                            bottom: '24px',
+                            padding: '12px 24px',
+                            background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
+                            border: 'none',
+                            color: '#fff',
+                            borderRadius: '20px',
+                            fontSize: '13px',
+                            fontWeight: 800,
+                            cursor: 'pointer',
+                            boxShadow: '0 8px 24px rgba(37,99,235,0.4)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            zIndex: 10
+                          }}
+                        >
+                          <Sparkles size={16} />
+                          <span>Scan Food Frame</span>
+                        </button>
+                      )}
+
+                      {/* Active model badge at bottom right */}
+                      <div style={{
+                        position: 'absolute',
+                        bottom: '12px',
+                        right: '12px',
+                        fontSize: '9px',
+                        color: 'rgba(255,255,255,0.3)',
+                        fontWeight: 600,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.5px'
+                      }}>
+                        Powered by Gemini 3.5 Flash
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      textAlign: 'center',
+                      background: '#020617',
+                      width: '100%',
+                      height: '100%',
+                      minHeight: '320px',
+                      position: 'relative'
+                    }}>
+                      <div style={{
+                        width: '32px',
+                        height: '32px',
+                        border: '3px solid rgba(255,255,255,0.1)',
+                        borderTopColor: '#60a5fa',
+                        borderRadius: '50%',
+                        animation: 'spin 0.8s linear infinite',
+                        marginBottom: '12px'
+                      }} />
+                      <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.4)', fontWeight: 500 }}>
+                        Awaiting camera permissions...
+                      </span>
+
+                      {/* POP-UP ALERT DIALOG OVERLAY */}
+                      <div style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: '100%',
+                        background: 'rgba(5, 8, 15, 0.82)',
+                        backdropFilter: 'blur(10px)',
+                        WebkitBackdropFilter: 'blur(10px)',
+                        zIndex: 400,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: '20px',
+                        boxSizing: 'border-box'
+                      }}>
+                        <div style={{
+                          background: '#131b2e',
+                          border: '1px solid rgba(255, 255, 255, 0.08)',
+                          borderRadius: '24px',
+                          padding: '24px 20px',
+                          maxWidth: '320px',
+                          width: '100%',
+                          textAlign: 'center',
+                          boxShadow: '0 20px 48px rgba(0,0,0,0.55)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: '16px'
+                        }}>
+                          <div style={{
+                            width: '56px',
+                            height: '56px',
+                            borderRadius: '50%',
+                            background: 'rgba(96, 165, 250, 0.1)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            boxShadow: '0 0 16px rgba(96,165,250,0.1)'
+                          }}>
+                            <Camera size={26} color="#60a5fa" />
+                          </div>
+                          <div>
+                            <h4 style={{ fontSize: '17px', fontWeight: 800, color: '#fff', margin: '0 0 6px 0' }}>Camera Permission</h4>
+                            <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.6)', margin: 0, lineHeight: '1.45' }}>
+                              HealthyBit needs camera permission to perform instant real-time food scanning and mapping.
+                            </p>
+                          </div>
+                          <button
+                            onClick={requestCameraPermission}
+                            style={{
+                              width: '100%',
+                              padding: '12px',
+                              background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
+                              color: '#fff',
+                              border: 'none',
+                              borderRadius: '12px',
+                              fontWeight: 700,
+                              fontSize: '13.5px',
+                              cursor: 'pointer',
+                              boxShadow: '0 6px 16px rgba(37,99,235,0.3)'
+                            }}
+                          >
+                            Allow Camera
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Scanner Status Overlay */}
+              {isAnalyzingFrame && (
+                <div className="glass-card" style={{
+                  position: 'absolute',
+                  top: '16px',
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  zIndex: 110,
+                  display: 'flex',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  padding: '10px 16px',
+                  gap: '10px',
+                  background: 'rgba(15, 23, 42, 0.85)',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  borderRadius: '9999px',
+                  boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+                  backdropFilter: 'blur(10px)',
+                  WebkitBackdropFilter: 'blur(10px)'
+                }}>
+                  <div style={{ width: '16px', height: '16px', border: '2px solid rgba(255,255,255,0.2)', borderTopColor: '#60a5fa', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                  <span style={{ fontSize: '12px', fontWeight: 600, color: '#fff' }}>AI analyzing frame...</span>
+                </div>
+              )}
+
+              {/* Detected Food Card Overlay */}
+              {liveScanDetectedFood && (
+                <div className="glass-card animate-slide-up" style={{
+                  position: 'absolute',
+                  bottom: '16px',
+                  left: '16px',
+                  right: '16px',
+                  maxHeight: 'calc(100% - 32px)',
+                  overflowY: 'auto',
+                  zIndex: 120,
+                  background: 'linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.9) 100%)',
+                  border: '1px solid rgba(59, 130, 246, 0.3)',
+                  boxShadow: '0 20px 48px rgba(0,0,0,0.5), inset 0 1px 1px rgba(255,255,255,0.1)',
+                  padding: '20px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px',
+                  borderRadius: '24px',
+                  backdropFilter: 'blur(20px)',
+                  WebkitBackdropFilter: 'blur(20px)'
+                }}>
+                  {/* Glowing neon decorative top bar */}
+                  <div style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    height: '3px',
+                    background: 'linear-gradient(90deg, #3b82f6, #8b5cf6, #ec4899)'
+                  }} />
+
+                  {/* Food Name & Health Score */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1 }}>
+                      <span style={{ fontSize: '10px', color: '#60a5fa', fontWeight: 800, letterSpacing: '1px', textTransform: 'uppercase' }}>Detected Meal</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <h3 style={{ fontSize: '20px', fontWeight: 900, color: '#fff', margin: 0, lineHeight: 1.2 }}>{liveScanDetectedFood.foodName}</h3>
+                        <button
+                          onClick={() => speakFoodAnalysis(liveScanDetectedFood)}
+                          style={{
+                            background: 'rgba(59, 130, 246, 0.15)',
+                            border: '1px solid rgba(59, 130, 246, 0.3)',
+                            color: '#60a5fa',
+                            width: '28px',
+                            height: '28px',
+                            borderRadius: '50%',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            cursor: 'pointer',
+                            transition: 'all 0.2s',
+                            padding: 0
+                          }}
+                          title="Speak macro summary aloud"
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.background = 'rgba(59, 130, 246, 0.3)';
+                            e.currentTarget.style.transform = 'scale(1.05)';
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.background = 'rgba(59, 130, 246, 0.15)';
+                            e.currentTarget.style.transform = 'scale(1)';
+                          }}
+                        >
+                          <Volume2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Health Score Pill */}
+                    {liveScanDetectedFood.healthScore !== undefined && (
+                      <div style={{
+                        background: liveScanDetectedFood.healthScore >= 75
+                          ? 'linear-gradient(135deg, rgba(16,185,129,0.2) 0%, rgba(16,185,129,0.3) 100%)'
+                          : liveScanDetectedFood.healthScore >= 50
+                            ? 'linear-gradient(135deg, rgba(245,158,11,0.2) 0%, rgba(245,158,11,0.3) 100%)'
+                            : 'linear-gradient(135deg, rgba(239,68,68,0.2) 0%, rgba(239,68,68,0.3) 100%)',
+                        border: `1px solid ${liveScanDetectedFood.healthScore >= 75 ? '#10b981' : liveScanDetectedFood.healthScore >= 50 ? '#f59e0b' : '#ef4444'}`,
+                        color: liveScanDetectedFood.healthScore >= 75 ? '#34d399' : liveScanDetectedFood.healthScore >= 50 ? '#fbbf24' : '#f87171',
+                        padding: '6px 12px',
+                        borderRadius: '16px',
+                        fontSize: '12px',
+                        fontWeight: 800,
+                        boxShadow: `0 4px 12px ${liveScanDetectedFood.healthScore >= 75 ? 'rgba(16,185,129,0.15)' : liveScanDetectedFood.healthScore >= 50 ? 'rgba(245,158,11,0.15)' : 'rgba(239,68,68,0.15)'}`,
+                        whiteSpace: 'nowrap'
+                      }}>
+                        ⭐ {liveScanDetectedFood.healthScore} Score
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Energy & Stats Section */}
+                  <div style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    justifyContent: 'space-between', 
+                    background: 'rgba(255,255,255,0.02)', 
+                    border: '1px solid rgba(255,255,255,0.05)',
+                    padding: '12px 16px', 
+                    borderRadius: '16px' 
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <div style={{
+                        width: '32px',
+                        height: '32px',
+                        borderRadius: '50%',
+                        background: 'rgba(249,115,22,0.15)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                      }}>
+                        <Flame size={18} color="#f97316" fill="#f97316" />
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column' }}>
+                        <span style={{ fontSize: '16px', fontWeight: 900, color: '#fff' }}>{liveScanDetectedFood.calories} kcal</span>
+                        <span style={{ fontSize: '9px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Energy Est.</span>
+                      </div>
+                    </div>
+                    
+                    {/* Visual food gauge */}
+                    <div style={{ fontSize: '11px', color: '#60a5fa', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(59,130,246,0.1)', padding: '4px 10px', borderRadius: '20px' }}>
+                      <Sparkles size={12} />
+                      <span>Real-time Scanned</span>
+                    </div>
+                  </div>
+                  
+                  {/* Macros grid with custom color progress bars */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+                    {/* Protein */}
+                    <div style={{ 
+                      display: 'flex', 
+                      flexDirection: 'column', 
+                      gap: '6px',
+                      background: 'rgba(239,68,68,0.03)',
+                      border: '1px solid rgba(239,68,68,0.1)',
+                      padding: '10px',
+                      borderRadius: '12px'
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ color: '#f87171', fontWeight: 700, fontSize: '11px' }}>Protein</span>
+                        <span style={{ color: '#fff', fontWeight: 900, fontSize: '12px' }}>{liveScanDetectedFood.protein}g</span>
+                      </div>
+                      <div style={{ width: '100%', height: '5px', background: 'rgba(239,68,68,0.1)', borderRadius: '3px', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', background: 'linear-gradient(90deg, #ef4444, #f87171)', width: `${Math.min(100, (liveScanDetectedFood.protein / 50) * 100)}%`, borderRadius: '3px' }} />
+                      </div>
+                    </div>
+
+                    {/* Carbs */}
+                    <div style={{ 
+                      display: 'flex', 
+                      flexDirection: 'column', 
+                      gap: '6px',
+                      background: 'rgba(245,158,11,0.03)',
+                      border: '1px solid rgba(245,158,11,0.1)',
+                      padding: '10px',
+                      borderRadius: '12px'
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ color: '#fbbf24', fontWeight: 700, fontSize: '11px' }}>Carbs</span>
+                        <span style={{ color: '#fff', fontWeight: 900, fontSize: '12px' }}>{liveScanDetectedFood.carbs}g</span>
+                      </div>
+                      <div style={{ width: '100%', height: '5px', background: 'rgba(245,158,11,0.1)', borderRadius: '3px', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', background: 'linear-gradient(90deg, #f59e0b, #fbbf24)', width: `${Math.min(100, (liveScanDetectedFood.carbs / 100) * 100)}%`, borderRadius: '3px' }} />
+                      </div>
+                    </div>
+
+                    {/* Fats */}
+                    <div style={{ 
+                      display: 'flex', 
+                      flexDirection: 'column', 
+                      gap: '6px',
+                      background: 'rgba(16,185,129,0.03)',
+                      border: '1px solid rgba(16,185,129,0.1)',
+                      padding: '10px',
+                      borderRadius: '12px'
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ color: '#34d399', fontWeight: 700, fontSize: '11px' }}>Fats</span>
+                        <span style={{ color: '#fff', fontWeight: 900, fontSize: '12px' }}>{liveScanDetectedFood.fats}g</span>
+                      </div>
+                      <div style={{ width: '100%', height: '5px', background: 'rgba(16,185,129,0.1)', borderRadius: '3px', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', background: 'linear-gradient(90deg, #10b981, #34d399)', width: `${Math.min(100, (liveScanDetectedFood.fats / 40) * 100)}%`, borderRadius: '3px' }} />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Log button and Clear button */}
+                  <div style={{ display: 'flex', gap: '12px', marginTop: '4px' }}>
+                    <button
+                      onClick={() => {
+                        playFeedback();
+                        if ('speechSynthesis' in window) {
+                          window.speechSynthesis.cancel();
+                        }
+                        setLiveScanDetectedFood(null);
+                      }}
+                      className="btn-secondary"
+                      style={{ 
+                        flex: 1, 
+                        padding: '14px', 
+                        borderRadius: '16px',
+                        fontWeight: 700,
+                        fontSize: '13px',
+                        border: '1px solid rgba(255,255,255,0.1)',
+                        background: 'rgba(255,255,255,0.05)',
+                        color: 'rgba(255,255,255,0.8)'
+                      }}
+                    >
+                      Clear Scan
+                    </button>
+                    <button
+                      onClick={handleSaveLiveScannedFood}
+                      className="btn-primary"
+                      style={{ 
+                        flex: 2, 
+                        padding: '14px', 
+                        borderRadius: '16px',
+                        fontWeight: 800,
+                        fontSize: '13px',
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        justifyContent: 'center', 
+                        gap: '8px',
+                        background: 'linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%)',
+                        border: 'none',
+                        boxShadow: '0 8px 20px rgba(59,130,246,0.3)',
+                        color: '#fff'
+                      }}
+                    >
+                      <Check size={16} />
+                      <span>Log to Diary</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
-        )}
+        )
+      )}
 
       {/* Tab 4: Settings */}
       {activeTab === 'settings' && (
@@ -4276,66 +6889,79 @@ Guidelines:
           <div style={{
             display: 'flex',
             alignItems: 'center',
-            gap: '16px',
-            padding: '20px',
-            borderRadius: '20px',
+            gap: '20px',
+            padding: '24px',
+            borderRadius: '24px',
             background: 'var(--glass-bg)',
             backdropFilter: 'blur(12px)',
             border: '1px solid var(--glass-border)',
             boxShadow: 'var(--card-shadow)',
-            transition: 'all 0.3s ease'
+            transition: 'all 0.3s ease',
+            flexWrap: 'wrap'
           }}>
-            {/* Tappable Avatar */}
-            <div
-              onClick={() => user && avatarInputRef.current?.click()}
-              style={{
-                width: '64px',
-                height: '64px',
-                borderRadius: '50%',
-                background: avatarUrl ? 'transparent' : 'linear-gradient(135deg, var(--accent-blue), var(--accent-orange))',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: '#fff',
-                fontSize: '22px',
-                fontWeight: 800,
-                boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
-                cursor: user ? 'pointer' : 'default',
-                overflow: 'hidden',
-                position: 'relative',
-                flexShrink: 0,
-                border: '2px solid var(--glass-border)'
-              }}
-            >
-              {avatarUrl ? (
-                <img
-                  src={avatarUrl}
-                  alt="Profile"
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                />
-              ) : (
-                <span>{settingsName ? settingsName[0].toUpperCase() : 'U'}</span>
-              )}
-              {/* Camera overlay on hover/tap */}
-              {user && (
-                <div style={{
-                  position: 'absolute',
-                  bottom: 0,
-                  left: 0,
-                  right: 0,
-                  background: 'rgba(0,0,0,0.55)',
+            {/* Tappable Avatar with Premium Camera Floating Action Icon */}
+            <div style={{ position: 'relative', flexShrink: 0 }}>
+              <div
+                onClick={() => avatarInputRef.current?.click()}
+                style={{
+                  width: '120px',
+                  height: '120px',
+                  borderRadius: '50%',
+                  background: avatarUrl ? 'transparent' : 'linear-gradient(135deg, var(--accent-blue), var(--accent-orange))',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  height: '28px',
-                  fontSize: '10px',
-                  fontWeight: 700,
                   color: '#fff',
-                  letterSpacing: '0.3px'
-                }}>
-                  {isUploadingAvatar ? '...' : '📷'}
-                </div>
-              )}
+                  fontSize: '44px',
+                  fontWeight: 800,
+                  boxShadow: '0 6px 20px rgba(0,0,0,0.2)',
+                  cursor: 'pointer',
+                  overflow: 'hidden',
+                  position: 'relative',
+                  border: '3px solid var(--glass-border)',
+                  transition: 'transform 0.2s ease'
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.transform = 'scale(1.03)')}
+                onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1.0)')}
+              >
+                {avatarUrl ? (
+                  <img
+                    src={avatarUrl}
+                    alt="Profile"
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  />
+                ) : (
+                  <span>{settingsName ? settingsName[0].toUpperCase() : 'G'}</span>
+                )}
+              </div>
+              <div
+                onClick={() => avatarInputRef.current?.click()}
+                style={{
+                  position: 'absolute',
+                  bottom: '4px',
+                  right: '4px',
+                  width: '36px',
+                  height: '36px',
+                  borderRadius: '50%',
+                  background: 'linear-gradient(135deg, var(--accent-blue), #1e40af)',
+                  border: '2px solid var(--bg-secondary)',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  color: '#fff',
+                  transition: 'all 0.2s ease'
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.transform = 'scale(1.1)')}
+                onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1.0)')}
+              >
+                {isUploadingAvatar ? (
+                  <div style={{ width: '14px', height: '14px', border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                ) : (
+                  <Camera size={16} />
+                )}
+              </div>
             </div>
             {/* Hidden avatar file input */}
             <input
@@ -4345,13 +6971,81 @@ Guidelines:
               onChange={handleAvatarUpload}
               style={{ display: 'none' }}
             />
-            <div style={{ flex: 1 }}>
-              <h2 style={{ fontSize: '18px', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>{settingsName || 'Guest User'}</h2>
-              <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '2px 0 0 0' }}>{user ? user.email : 'Local Guest Profile'}</p>
-              {user && (
-                <p style={{ fontSize: '10px', color: 'var(--text-tertiary)', margin: '4px 0 0 0' }}>Tap photo to change</p>
-              )}
+            <div style={{ flex: 1, minWidth: '200px' }}>
+              <h2 style={{ fontSize: '20px', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>{settingsName || 'Guest User'}</h2>
+              <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '4px 0 0 0' }}>{user ? user.email : 'Local Guest Profile'}</p>
+              <p style={{ fontSize: '11px', color: 'var(--text-tertiary)', margin: '6px 0 0 0' }}>Tap photo or camera icon to upload photo</p>
             </div>
+          </div>
+
+          {/* Subscription Tier Status Panel */}
+          <div className="glass-card" style={{
+            padding: '20px',
+            borderRadius: '24px',
+            background: profile.is_premium
+              ? 'linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(15, 23, 42, 0.6) 100%)'
+              : 'var(--glass-bg)',
+            border: profile.is_premium
+              ? '1px solid rgba(245, 158, 11, 0.25)'
+              : '1px solid var(--glass-border)',
+            boxShadow: 'var(--card-shadow)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '14px'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '20px' }}>{profile.is_premium ? '⭐' : '🛡️'}</span>
+                <div>
+                  <h4 style={{ fontSize: '15px', fontWeight: 800, color: profile.is_premium ? '#f59e0b' : 'var(--text-primary)', margin: 0 }}>
+                    {profile.is_premium ? 'HealthyBit Premium' : 'HealthyBit Free Plan'}
+                  </h4>
+                  <p style={{ fontSize: '11px', color: 'var(--text-secondary)', margin: '2px 0 0 0' }}>
+                    {profile.is_premium
+                      ? `Unlimited access until ${profile.premium_until ? new Date(profile.premium_until).toLocaleDateString() : 'Active'}`
+                      : `${Math.max(0, 3 - (profile.scans_used || 0))} of 3 free standard food scans remaining`
+                    }
+                  </p>
+                </div>
+              </div>
+              <span style={{
+                fontSize: '11px',
+                fontWeight: 800,
+                padding: '4px 8px',
+                borderRadius: '8px',
+                textTransform: 'uppercase',
+                background: profile.is_premium ? 'rgba(245, 158, 11, 0.15)' : 'rgba(255, 255, 255, 0.05)',
+                color: profile.is_premium ? '#f59e0b' : 'var(--text-tertiary)',
+                border: profile.is_premium ? '1px solid rgba(245, 158, 11, 0.3)' : '1px solid rgba(255, 255, 255, 0.1)'
+              }}>
+                {profile.is_premium ? 'Premium' : 'Free Trial'}
+              </span>
+            </div>
+
+            {!profile.is_premium && (
+              <button
+                onClick={() => setShowPaywall(true)}
+                className="btn-primary"
+                style={{
+                  background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                  color: '#fff',
+                  border: 'none',
+                  fontWeight: 700,
+                  fontSize: '13px',
+                  padding: '10px 14px',
+                  borderRadius: '10px',
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 12px rgba(245, 158, 11, 0.25)',
+                  transition: 'all 0.2s',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px'
+                }}
+              >
+                <span>Upgrade to Premium (300 Rs)</span>
+              </button>
+            )}
           </div>
 
           {/* Profile Config Card */}
@@ -4466,6 +7160,119 @@ Guidelines:
               </div>
             </div>
 
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '12px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: 600 }}>Goal Type</label>
+                <select
+                  value={settingsGoalType}
+                  onChange={(e) => setSettingsGoalType(e.target.value as any)}
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: '12px',
+                    background: 'var(--bg-tertiary)',
+                    color: 'var(--text-primary)',
+                    border: '1px solid var(--glass-border)',
+                    outline: 'none',
+                    fontWeight: 600,
+                    fontSize: '14px',
+                    transition: 'all 0.2s ease',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <option value="lose">Lose Weight</option>
+                  <option value="maintain">Maintain Weight</option>
+                  <option value="gain">Gain Weight</option>
+                </select>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: 600 }}>Activity Level</label>
+                <select
+                  value={settingsActivityLevel}
+                  onChange={(e) => setSettingsActivityLevel(e.target.value)}
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: '12px',
+                    background: 'var(--bg-tertiary)',
+                    color: 'var(--text-primary)',
+                    border: '1px solid var(--glass-border)',
+                    outline: 'none',
+                    fontWeight: 600,
+                    fontSize: '14px',
+                    transition: 'all 0.2s ease',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <option value="sedentary">Sedentary (desk job)</option>
+                  <option value="light">Lightly Active</option>
+                  <option value="moderate">Moderately Active</option>
+                  <option value="very">Very Active</option>
+                </select>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(90px, 1fr))', gap: '10px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: 600 }}>Protein (g)</label>
+                <input
+                  type="number"
+                  value={settingsProteinGoal}
+                  onChange={(e) => setSettingsProteinGoal(e.target.value)}
+                  placeholder="Protein"
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: '12px',
+                    background: 'var(--bg-tertiary)',
+                    color: 'var(--text-primary)',
+                    border: '1px solid var(--glass-border)',
+                    outline: 'none',
+                    fontWeight: 600,
+                    fontSize: '14px',
+                    transition: 'all 0.2s ease'
+                  }}
+                />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: 600 }}>Carbs (g)</label>
+                <input
+                  type="number"
+                  value={settingsCarbsGoal}
+                  onChange={(e) => setSettingsCarbsGoal(e.target.value)}
+                  placeholder="Carbs"
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: '12px',
+                    background: 'var(--bg-tertiary)',
+                    color: 'var(--text-primary)',
+                    border: '1px solid var(--glass-border)',
+                    outline: 'none',
+                    fontWeight: 600,
+                    fontSize: '14px',
+                    transition: 'all 0.2s ease'
+                  }}
+                />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: 600 }}>Fats (g)</label>
+                <input
+                  type="number"
+                  value={settingsFatsGoal}
+                  onChange={(e) => setSettingsFatsGoal(e.target.value)}
+                  placeholder="Fats"
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: '12px',
+                    background: 'var(--bg-tertiary)',
+                    color: 'var(--text-primary)',
+                    border: '1px solid var(--glass-border)',
+                    outline: 'none',
+                    fontWeight: 600,
+                    fontSize: '14px',
+                    transition: 'all 0.2s ease'
+                  }}
+                />
+              </div>
+            </div>
+
             <button
               onClick={handleSaveSettings}
               className="btn-primary"
@@ -4509,32 +7316,153 @@ Guidelines:
                   <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent-green)' }} />
                   <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Synced to <strong>{user.email}</strong></span>
                 </div>
-                <button onClick={handleLogout} className="btn-secondary" style={{ width: '100%', gap: '8px' }}>
-                  <LogOut size={16} /> Sign Out & Local Mode
+
+                {!showSettingsChangePassword ? (
+                  <button
+                    onClick={() => {
+                      setShowSettingsChangePassword(true);
+                      setSettingsNewPassword('');
+                      setSettingsNewPasswordConfirm('');
+                      setSettingsPasswordError('');
+                      setSettingsPasswordSuccess(false);
+                    }}
+                    className="btn-secondary"
+                    style={{
+                      width: '100%',
+                      fontSize: '13px',
+                      padding: '10px 12px',
+                      borderRadius: '12px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px'
+                    }}
+                  >
+                    <Lock size={14} /> Change Password
+                  </button>
+                ) : (
+                  <div style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px',
+                    padding: '14px',
+                    borderRadius: '14px',
+                    background: 'rgba(255,255,255,0.02)',
+                    border: '1px solid var(--glass-border)'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>Update Password</span>
+                      <button
+                        onClick={() => setShowSettingsChangePassword(false)}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--text-secondary)',
+                          fontSize: '11px',
+                          cursor: 'pointer',
+                          fontWeight: 600
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+
+                    <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                      <input
+                        type={showSettingsPassword ? "text" : "password"}
+                        placeholder="New Password (min 6 chars)"
+                        value={settingsNewPassword}
+                        onChange={(e) => setSettingsNewPassword(e.target.value)}
+                        style={{
+                          width: '100%',
+                          padding: '10px 12px',
+                          paddingRight: '40px',
+                          borderRadius: '10px',
+                          background: 'var(--bg-tertiary)',
+                          color: 'var(--text-primary)',
+                          border: '1px solid var(--glass-border)',
+                          outline: 'none',
+                          fontSize: '13px'
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowSettingsPassword(!showSettingsPassword)}
+                        style={{
+                          position: 'absolute',
+                          right: '10px',
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--text-secondary)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          padding: 0
+                        }}
+                      >
+                        {showSettingsPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                    </div>
+
+                    <input
+                      type={showSettingsPassword ? "text" : "password"}
+                      placeholder="Confirm New Password"
+                      value={settingsNewPasswordConfirm}
+                      onChange={(e) => setSettingsNewPasswordConfirm(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '10px 12px',
+                        borderRadius: '10px',
+                        background: 'var(--bg-tertiary)',
+                        color: 'var(--text-primary)',
+                        border: '1px solid var(--glass-border)',
+                        outline: 'none',
+                        fontSize: '13px'
+                      }}
+                    />
+
+                    {settingsPasswordError && (
+                      <span style={{ fontSize: '11px', color: 'var(--accent-red)' }}>{settingsPasswordError}</span>
+                    )}
+                    {settingsPasswordSuccess && (
+                      <span style={{ fontSize: '11px', color: 'var(--accent-green)' }}>Password updated! 🎉</span>
+                    )}
+
+                    <button
+                      onClick={handleSettingsChangePassword}
+                      className="btn-primary"
+                      disabled={isLoading}
+                      style={{
+                        padding: '10px',
+                        fontSize: '13px',
+                        borderRadius: '10px'
+                      }}
+                    >
+                      {isLoading ? 'Updating...' : 'Update Password'}
+                    </button>
+                  </div>
+                )}
+
+                <button
+                  onClick={handleLogout}
+                  className="btn-secondary"
+                  style={{
+                    width: '100%',
+                    gap: '8px',
+                    borderColor: 'rgba(239,68,68,0.35)',
+                    color: 'var(--accent-red)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                  }}
+                >
+                  <LogOut size={16} /> Log Out
                 </button>
               </div>
             </div>
           )}
 
-          {/* Reset Onboarding Card */}
-          <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <h3 style={{ fontSize: '16px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Info size={18} color="var(--accent-orange)" /> Questionnaire Reset
-            </h3>
-            <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-              Want to update your setup choices, diet, target weights, or notifications? You can reset the onboarding wizard to run again.
-            </p>
-            <button
-              onClick={() => {
-                localStorage.removeItem('hb_onboarding_completed');
-                setOnboardingStep(1);
-              }}
-              className="btn-secondary"
-              style={{ width: '100%', borderColor: 'rgba(239, 68, 68, 0.4)', color: 'var(--accent-red)', gap: '8px' }}
-            >
-              Reset & Restart Onboarding
-            </button>
-          </div>
+
         </div>
       )}
     </div>
@@ -4554,42 +7482,211 @@ Guidelines:
         flexDirection: 'column'
       }}>
         {/* Top Camera bar */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 20px', zIndex: 10 }}>
-          <button
-            onClick={stopCamera}
-            style={{ background: 'rgba(0,0,0,0.5)', border: 'none', color: '#fff', width: '36px', height: '36px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
-          >
-            <X size={20} />
-          </button>
-          <span style={{ color: '#fff', fontSize: '15px', fontWeight: 600, textShadow: '0 2px 4px rgba(0,0,0,0.5)', marginTop: '8px' }}>Scan Food</span>
-          <div style={{ width: '36px' }} />
+        <div style={{ display: 'flex', flexDirection: 'column', zIndex: 10 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px 8px' }}>
+            <button
+              onClick={stopCamera}
+              style={{ background: 'rgba(0,0,0,0.5)', border: 'none', color: '#fff', width: '36px', height: '36px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+            >
+              <X size={20} />
+            </button>
+            <span style={{ color: '#fff', fontSize: '15px', fontWeight: 600, textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>Scan Food</span>
+            {/* Scan limit badge */}
+            {profile.is_premium ? (
+              <span style={{
+                background: 'rgba(16,185,129,0.25)',
+                border: '1px solid rgba(16,185,129,0.5)',
+                color: '#34d399',
+                fontSize: '10px',
+                fontWeight: 800,
+                padding: '4px 10px',
+                borderRadius: '20px',
+                letterSpacing: '0.3px'
+              }}>✦ Unlimited</span>
+            ) : (() => {
+              const used = profile.scans_used || 0;
+              const remaining = Math.max(0, 3 - used);
+              const isLast = remaining === 1;
+              const isEmpty = remaining === 0;
+              return (
+                <span style={{
+                  background: isEmpty
+                    ? 'rgba(239,68,68,0.25)'
+                    : isLast
+                      ? 'rgba(245,158,11,0.25)'
+                      : 'rgba(255,255,255,0.12)',
+                  border: `1px solid ${isEmpty ? 'rgba(239,68,68,0.5)' : isLast ? 'rgba(245,158,11,0.5)' : 'rgba(255,255,255,0.2)'}`,
+                  color: isEmpty ? '#f87171' : isLast ? '#fbbf24' : '#e2e8f0',
+                  fontSize: '10px',
+                  fontWeight: 800,
+                  padding: '4px 10px',
+                  borderRadius: '20px',
+                  boxShadow: isLast ? '0 0 8px rgba(245,158,11,0.3)' : 'none',
+                  letterSpacing: '0.3px',
+                  whiteSpace: 'nowrap'
+                }}>
+                  {isEmpty ? '0 left · Upgrade' : `${remaining} / 3 free`}
+                </span>
+              );
+            })()}
+          </div>
+          {/* Scan progress bar for free users */}
+          {!profile.is_premium && (
+            <div style={{ height: '3px', background: 'rgba(255,255,255,0.08)', margin: '0 20px 4px' }}>
+              <div style={{
+                height: '100%',
+                width: `${Math.min(100, ((profile.scans_used || 0) / 3) * 100)}%`,
+                background: (profile.scans_used || 0) >= 3
+                  ? '#ef4444'
+                  : (profile.scans_used || 0) === 2
+                    ? '#f59e0b'
+                    : '#10b981',
+                borderRadius: '2px',
+                transition: 'width 0.5s ease'
+              }} />
+            </div>
+          )}
         </div>
 
         {/* Camera Video / Viewfinder overlay */}
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-          />
+          {cameraPermissionStatus === 'denied' || cameraPermissionStatus === 'unsupported' ? (
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '32px 24px',
+              textAlign: 'center',
+              zIndex: 10,
+              maxWidth: '380px'
+            }}>
+              <div style={{
+                width: '64px',
+                height: '64px',
+                borderRadius: '20px',
+                background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.1) 0%, rgba(220, 38, 38, 0.1) 100%)',
+                border: '1px solid rgba(239,68,68,0.2)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                marginBottom: '16px',
+                boxShadow: '0 8px 24px rgba(239,68,68,0.1)'
+              }}>
+                <CameraOff size={28} style={{ color: '#f87171' }} />
+              </div>
+              <h2 style={{ fontSize: '18px', fontWeight: 700, marginBottom: '8px', color: '#fff' }}>
+                {cameraPermissionStatus === 'unsupported' ? 'Live Camera Unavailable' : 'Camera Blocked'}
+              </h2>
+              <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '20px', lineHeight: 1.5 }}>
+                {cameraPermissionStatus === 'unsupported'
+                  ? 'Live scanner requires a secure HTTPS connection. Please capture a photo using your native camera or choose from gallery.'
+                  : 'Please enable camera permissions in your browser settings to scan your food, or use native upload below.'
+                }
+              </p>
 
-          {/* Viewfinder Reticle Frame */}
-          <div style={{
-            position: 'absolute',
-            width: '260px',
-            height: '260px',
-            border: '2px dashed rgba(255, 255, 255, 0.6)',
-            borderRadius: '24px',
-            boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.5)',
-            pointerEvents: 'none'
-          }}>
-            <div style={{ position: 'absolute', top: '-10px', left: '-10px', width: '20px', height: '20px', borderTop: '4px solid #fff', borderLeft: '4px solid #fff' }} />
-            <div style={{ position: 'absolute', top: '-10px', right: '-10px', width: '20px', height: '20px', borderTop: '4px solid #fff', borderRight: '4px solid #fff' }} />
-            <div style={{ position: 'absolute', bottom: '-10px', left: '-10px', width: '20px', height: '20px', borderBottom: '4px solid #fff', borderLeft: '4px solid #fff' }} />
-            <div style={{ position: 'absolute', bottom: '-10px', right: '-10px', width: '20px', height: '20px', borderBottom: '4px solid #fff', borderRight: '4px solid #fff' }} />
-          </div>
+              {/* Two Main Call-To-Action Capture Buttons */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', width: '100%', marginBottom: '20px' }}>
+                <button
+                  onClick={() => nativeCameraInputRef.current?.click()}
+                  style={{
+                    width: '100%',
+                    padding: '14px 20px',
+                    background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                    border: 'none',
+                    color: '#fff',
+                    borderRadius: '14px',
+                    fontWeight: 700,
+                    fontSize: '14px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    boxShadow: '0 4px 12px rgba(16,185,129,0.2)'
+                  }}
+                >
+                  <Camera size={18} /> Take Photo (Native Camera)
+                </button>
+
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  style={{
+                    width: '100%',
+                    padding: '14px 20px',
+                    background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                    border: 'none',
+                    color: '#fff',
+                    borderRadius: '14px',
+                    fontWeight: 700,
+                    fontSize: '14px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    boxShadow: '0 4px 12px rgba(37,99,235,0.2)'
+                  }}
+                >
+                  <Plus size={18} /> Choose from Gallery
+                </button>
+              </div>
+
+              {cameraPermissionStatus === 'denied' && (
+                <div style={{
+                  background: 'rgba(15,23,42,0.6)',
+                  border: '1px solid rgba(255,255,255,0.05)',
+                  borderRadius: '16px',
+                  padding: '16px',
+                  textAlign: 'left',
+                  width: '100%',
+                  marginBottom: '24px',
+                  fontSize: '12px',
+                  color: '#94a3b8',
+                  lineHeight: 1.6
+                }}>
+                  <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                    <span style={{ color: '#60a5fa', fontWeight: 700 }}>1.</span>
+                    <span>Tap the lock/settings icon 🔒 next to the web address bar.</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                    <span style={{ color: '#60a5fa', fontWeight: 700 }}>2.</span>
+                    <span>Toggle the <b>Camera</b> setting to <b>"Allow"</b>.</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <span style={{ color: '#60a5fa', fontWeight: 700 }}>3.</span>
+                    <span>Refresh this page to re-initialize scanner.</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              />
+
+              {/* Viewfinder Reticle Frame */}
+              <div style={{
+                position: 'absolute',
+                width: '260px',
+                height: '260px',
+                border: '2px dashed rgba(255, 255, 255, 0.6)',
+                borderRadius: '24px',
+                boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.5)',
+                pointerEvents: 'none'
+              }}>
+                <div style={{ position: 'absolute', top: '-10px', left: '-10px', width: '20px', height: '20px', borderTop: '4px solid #fff', borderLeft: '4px solid #fff' }} />
+                <div style={{ position: 'absolute', top: '-10px', right: '-10px', width: '20px', height: '20px', borderTop: '4px solid #fff', borderRight: '4px solid #fff' }} />
+                <div style={{ position: 'absolute', bottom: '-10px', left: '-10px', width: '20px', height: '20px', borderBottom: '4px solid #fff', borderLeft: '4px solid #fff' }} />
+                <div style={{ position: 'absolute', bottom: '-10px', right: '-10px', width: '20px', height: '20px', borderBottom: '4px solid #fff', borderRight: '4px solid #fff' }} />
+              </div>
+            </>
+          )}
         </div>
 
         {/* Bottom Action buttons */}
@@ -4610,31 +7707,25 @@ Guidelines:
             >
               <Plus size={20} />
             </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              onChange={handleImageUpload}
-              style={{ display: 'none' }}
-            />
 
             {/* Central Trigger button */}
-            <button
-              onClick={capturePhoto}
-              style={{
-                width: '72px',
-                height: '72px',
-                borderRadius: '50%',
-                background: '#fff',
-                border: '6px solid rgba(255, 255, 255, 0.3)',
-                cursor: 'pointer',
-                transition: 'all 0.2s'
-              }}
-            />
+            {cameraPermissionStatus !== 'denied' && (
+              <button
+                onClick={capturePhoto}
+                style={{
+                  width: '72px',
+                  height: '72px',
+                  borderRadius: '50%',
+                  background: '#fff',
+                  border: '6px solid rgba(255, 255, 255, 0.3)',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s'
+                }}
+              />
+            )}
 
             {/* Placeholder blank */}
-            <div style={{ width: '48px' }} />
+            {cameraPermissionStatus !== 'denied' ? <div style={{ width: '48px' }} /> : null}
           </div>
 
           <p style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>Center food inside frame and snap, or upload a photo.</p>
@@ -4747,6 +7838,37 @@ Guidelines:
             <ChevronLeft size={24} />
           </button>
           <span style={{ fontSize: '16px', fontWeight: 700, color: '#fff' }}>Meal Breakdown</span>
+          {currentAnalysis && (
+            <button
+              onClick={() => speakFoodAnalysis(currentAnalysis)}
+              style={{
+                marginLeft: 'auto',
+                background: 'rgba(249, 115, 22, 0.1)',
+                border: '1px solid rgba(249, 115, 22, 0.25)',
+                color: 'var(--accent-orange)',
+                width: '36px',
+                height: '36px',
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                boxShadow: '0 0 10px rgba(249, 115, 22, 0.2)'
+              }}
+              title="Hear nutritional analysis"
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = 'scale(1.1)';
+                e.currentTarget.style.background = 'rgba(249, 115, 22, 0.2)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'scale(1.0)';
+                e.currentTarget.style.background = 'rgba(249, 115, 22, 0.1)';
+              }}
+            >
+              <Volume2 size={18} />
+            </button>
+          )}
         </div>
 
         <div style={{ overflowY: 'auto', flex: 1, padding: '20px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -4872,31 +7994,83 @@ Guidelines:
                   <Flame size={36} fill="var(--accent-orange)" color="var(--accent-orange)" style={{ filter: 'drop-shadow(0 2px 8px rgba(249,115,22,0.5))' }} />
                   <h1 style={{ fontSize: '46px', fontWeight: 900, color: '#ffffff', letterSpacing: '-1px' }}>{Math.round(currentAnalysis.calories * breakdownQuantity)}</h1>
                 </div>
-                <span style={{ fontSize: '13px', color: 'var(--text-tertiary)', fontWeight: 500 }}>Total Calories (kcal)</span>
+                <span style={{ fontSize: '13px', color: 'var(--text-tertiary)', fontWeight: 500, textAlign: 'center', display: 'block' }}>
+                  Total Calories (kcal)
+                  {profile.daily_calorie_goal > 0 && (
+                    <span style={{ display: 'block', fontSize: '11px', color: 'var(--accent-orange)', marginTop: '4px', fontWeight: 700 }}>
+                      Fulfills {Math.round((currentAnalysis.calories * breakdownQuantity / profile.daily_calorie_goal) * 100)}% of your daily budget
+                    </span>
+                  )}
+                </span>
               </div>
 
               {/* Macronutrients detail */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
-                <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', padding: '14px 8px', background: 'rgba(239,68,68,0.04)', borderColor: 'rgba(239,68,68,0.15)' }}>
-                  <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontWeight: 500 }}>Protein</span>
-                  <span style={{ fontSize: '20px', fontWeight: 800, color: '#f87171' }}>{Math.round(currentAnalysis.protein * breakdownQuantity)}g</span>
-                  <div style={{ width: '100%', height: '3px', background: 'rgba(239,68,68,0.1)', borderRadius: '2px', overflow: 'hidden', marginTop: '2px' }}>
-                    <div style={{ height: '100%', background: '#ef4444', width: '100%' }} />
+                <div className="glass-card" style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '16px 10px',
+                  background: 'linear-gradient(135deg, rgba(239,68,68,0.1) 0%, rgba(239,68,68,0.01) 100%)',
+                  borderColor: 'rgba(239,68,68,0.25)',
+                  boxShadow: '0 4px 12px rgba(239,68,68,0.05)',
+                  borderRadius: '16px'
+                }}>
+                  <span style={{ fontSize: '11px', color: '#f87171', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Protein</span>
+                  <span style={{ fontSize: '24px', fontWeight: 900, color: '#ff8a8a', letterSpacing: '-0.5px' }}>{Math.round(currentAnalysis.protein * breakdownQuantity)}g</span>
+                  <div style={{ width: '100%', height: '4px', background: 'rgba(239,68,68,0.15)', borderRadius: '4px', overflow: 'hidden', marginTop: '4px' }}>
+                    <div style={{ height: '100%', background: '#ef4444', width: '100%', boxShadow: '0 0 8px #ef4444' }} />
                   </div>
+                  {profile.protein_goal_g > 0 && (
+                    <span style={{ fontSize: '9px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                      {Math.round((currentAnalysis.protein * breakdownQuantity / profile.protein_goal_g) * 100)}% of goal
+                    </span>
+                  )}
                 </div>
-                <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', padding: '14px 8px', background: 'rgba(245,158,11,0.04)', borderColor: 'rgba(245,158,11,0.15)' }}>
-                  <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontWeight: 500 }}>Carbs</span>
-                  <span style={{ fontSize: '20px', fontWeight: 800, color: '#fbbf24' }}>{Math.round(currentAnalysis.carbs * breakdownQuantity)}g</span>
-                  <div style={{ width: '100%', height: '3px', background: 'rgba(245,158,11,0.1)', borderRadius: '2px', overflow: 'hidden', marginTop: '2px' }}>
-                    <div style={{ height: '100%', background: '#f59e0b', width: '100%' }} />
+                <div className="glass-card" style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '16px 10px',
+                  background: 'linear-gradient(135deg, rgba(245,158,11,0.1) 0%, rgba(245,158,11,0.01) 100%)',
+                  borderColor: 'rgba(245,158,11,0.25)',
+                  boxShadow: '0 4px 12px rgba(245,158,11,0.05)',
+                  borderRadius: '16px'
+                }}>
+                  <span style={{ fontSize: '11px', color: '#fbbf24', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Carbs</span>
+                  <span style={{ fontSize: '24px', fontWeight: 900, color: '#fde047', letterSpacing: '-0.5px' }}>{Math.round(currentAnalysis.carbs * breakdownQuantity)}g</span>
+                  <div style={{ width: '100%', height: '4px', background: 'rgba(245,158,11,0.15)', borderRadius: '4px', overflow: 'hidden', marginTop: '4px' }}>
+                    <div style={{ height: '100%', background: '#f59e0b', width: '100%', boxShadow: '0 0 8px #f59e0b' }} />
                   </div>
+                  {profile.carbs_goal_g > 0 && (
+                    <span style={{ fontSize: '9px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                      {Math.round((currentAnalysis.carbs * breakdownQuantity / profile.carbs_goal_g) * 100)}% of goal
+                    </span>
+                  )}
                 </div>
-                <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', padding: '14px 8px', background: 'rgba(16,185,129,0.04)', borderColor: 'rgba(16,185,129,0.15)' }}>
-                  <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontWeight: 500 }}>Fats</span>
-                  <span style={{ fontSize: '20px', fontWeight: 800, color: '#34d399' }}>{Math.round(currentAnalysis.fats * breakdownQuantity)}g</span>
-                  <div style={{ width: '100%', height: '3px', background: 'rgba(16,185,129,0.1)', borderRadius: '2px', overflow: 'hidden', marginTop: '2px' }}>
-                    <div style={{ height: '100%', background: '#10b981', width: '100%' }} />
+                <div className="glass-card" style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '16px 10px',
+                  background: 'linear-gradient(135deg, rgba(16,185,129,0.1) 0%, rgba(16,185,129,0.01) 100%)',
+                  borderColor: 'rgba(16,185,129,0.25)',
+                  boxShadow: '0 4px 12px rgba(16,185,129,0.05)',
+                  borderRadius: '16px'
+                }}>
+                  <span style={{ fontSize: '11px', color: '#34d399', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Fats</span>
+                  <span style={{ fontSize: '24px', fontWeight: 900, color: '#6ee7b7', letterSpacing: '-0.5px' }}>{Math.round(currentAnalysis.fats * breakdownQuantity)}g</span>
+                  <div style={{ width: '100%', height: '4px', background: 'rgba(16,185,129,0.15)', borderRadius: '4px', overflow: 'hidden', marginTop: '4px' }}>
+                    <div style={{ height: '100%', background: '#10b981', width: '100%', boxShadow: '0 0 8px #10b981' }} />
                   </div>
+                  {profile.fats_goal_g > 0 && (
+                    <span style={{ fontSize: '9px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                      {Math.round((currentAnalysis.fats * breakdownQuantity / profile.fats_goal_g) * 100)}% of goal
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -5071,9 +8245,9 @@ Guidelines:
               </div>
             </button>
 
-            {/* Describe Ingredients */}
+            {/* Choice Photo from Gallery */}
             <button
-              onClick={() => { setShowTextDescriber(true); setShowAddMenu(false); }}
+              onClick={() => { setShowAddMenu(false); fileInputRef.current?.click(); }}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -5090,11 +8264,11 @@ Guidelines:
               }}
             >
               <div style={{ background: 'rgba(249,115,22,0.08)', color: 'var(--accent-orange)', width: '40px', height: '40px', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                <Keyboard size={20} />
+                <Image size={20} />
               </div>
               <div>
-                <h4 style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-primary)' }}>Describe Foods</h4>
-                <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>Log by typing a description or recipe</p>
+                <h4 style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-primary)' }}>Choice Photo from Gallery</h4>
+                <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>Choose a photo from your photo library</p>
               </div>
             </button>
           </div>
@@ -5212,19 +8386,35 @@ Guidelines:
                 flexDirection: msg.sender === 'user' ? 'row-reverse' : 'row'
               }}>
                 {/* Avatar dot */}
-                <div style={{
-                  width: '28px', height: '28px', borderRadius: '50%', flexShrink: 0,
-                  background: msg.sender === 'user'
-                    ? 'linear-gradient(135deg, #2563eb, #1d4ed8)'
-                    : 'linear-gradient(135deg, #7c3aed, #5b21b6)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: '11px', fontWeight: 700, color: '#fff',
-                  boxShadow: msg.sender === 'user'
-                    ? '0 2px 8px rgba(37,99,235,0.35)'
-                    : '0 2px 8px rgba(124,58,237,0.35)'
-                }}>
-                  {msg.sender === 'user' ? <User size={13} /> : <Sparkles size={13} />}
-                </div>
+                {msg.sender === 'user' && avatarUrl ? (
+                  <img
+                    src={avatarUrl}
+                    alt="User"
+                    style={{
+                      width: '28px',
+                      height: '28px',
+                      borderRadius: '50%',
+                      flexShrink: 0,
+                      objectFit: 'cover',
+                      border: '1.5px solid rgba(255, 255, 255, 0.2)',
+                      boxShadow: '0 2px 8px rgba(37,99,235,0.35)'
+                    }}
+                  />
+                ) : (
+                  <div style={{
+                    width: '28px', height: '28px', borderRadius: '50%', flexShrink: 0,
+                    background: msg.sender === 'user'
+                      ? 'linear-gradient(135deg, #2563eb, #1d4ed8)'
+                      : 'linear-gradient(135deg, #7c3aed, #5b21b6)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: '11px', fontWeight: 700, color: '#fff',
+                    boxShadow: msg.sender === 'user'
+                      ? '0 2px 8px rgba(37,99,235,0.35)'
+                      : '0 2px 8px rgba(124,58,237,0.35)'
+                  }}>
+                    {msg.sender === 'user' ? <User size={13} /> : <Sparkles size={13} />}
+                  </div>
+                )}
 
                 {/* Bubble */}
                 <div style={{
@@ -5392,7 +8582,9 @@ Guidelines:
           <span>
             {scanError === 'quota'
               ? 'API Key quota exceeded. Try again later.'
-              : 'Failed to analyze food. Please check your connection.'}
+              : scanError === 'failed'
+                ? 'Failed to analyze food. Please check your connection.'
+                : scanError}
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -5437,6 +8629,529 @@ Guidelines:
         }
       `}</style>
 
+  {/* Premium Paywall Modal Overlay */}
+  {showPaywall && (
+    <div style={{
+      position: 'absolute',
+      top: 0, left: 0,
+      width: '100%', height: '100%',
+      background: 'rgba(5, 8, 15, 0.85)',
+      backdropFilter: 'blur(16px)',
+      WebkitBackdropFilter: 'blur(16px)',
+      zIndex: 500,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '20px',
+      boxSizing: 'border-box',
+      animation: 'fadeIn 0.2s ease-out'
+    }}>
+      <div style={{
+        width: '100%',
+        maxWidth: '440px',
+        maxHeight: '90%',
+        borderRadius: '30px',
+        background: 'linear-gradient(180deg, #131b2e 0%, #090d16 100%)',
+        border: '1px solid rgba(245, 158, 11, 0.25)',
+        boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 40px rgba(245, 158, 11, 0.1)',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        position: 'relative'
+      }}>
+        {/* Close Button */}
+        {paywallStep !== 'success' && (
+          <button
+            onClick={() => {
+              setShowPaywall(false);
+              setPaywallStep('plans');
+            }}
+            style={{
+              position: 'absolute',
+              top: '18px',
+              right: '18px',
+              width: '32px',
+              height: '32px',
+              borderRadius: '50%',
+              background: 'rgba(255, 255, 255, 0.06)',
+              border: '1px solid rgba(255, 255, 255, 0.08)',
+              color: 'rgba(255, 255, 255, 0.6)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              zIndex: 10
+            }}
+          >
+            <X size={16} />
+          </button>
+        )}
+
+        {/* Modal Content */}
+        <div style={{ overflowY: 'auto', padding: '28px 24px', flex: 1 }}>
+          {paywallStep === 'plans' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              <div style={{ textAlign: 'center', marginTop: '10px' }}>
+                <div style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '56px',
+                  height: '56px',
+                  borderRadius: '18px',
+                  background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                  boxShadow: '0 0 20px rgba(245, 158, 11, 0.3)',
+                  marginBottom: '12px'
+                }}>
+                  <Sparkles size={28} color="#fff" />
+                </div>
+                <h3 style={{ fontSize: '22px', fontWeight: 850, color: '#fff', margin: 0, letterSpacing: '-0.5px' }}>
+                  Unlock HealthyBit Pro
+                </h3>
+                <p style={{ fontSize: '13px', color: 'rgba(255, 255, 255, 0.6)', margin: '6px 0 0 0' }}>
+                  Upgrade for unlimited smart scans and advanced coaching
+                </p>
+              </div>
+
+              {/* Premium Features List */}
+              <div style={{
+                background: 'rgba(255, 255, 255, 0.03)',
+                border: '1px solid rgba(255, 255, 255, 0.05)',
+                borderRadius: '20px',
+                padding: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px'
+              }}>
+                {[
+                  { title: 'Unlimited AI Food & Live Scans', desc: 'No scan caps or cooldowns.' },
+                  { title: 'Triple AI Model Architecture', desc: 'Gemini 2.5 Pro (Chat), Gemini 3.5 Flash (Images), & Gemini 3.5 Flash (Live Scan)' },
+                  { title: 'Real-time Camera Feed Scanning', desc: 'Scan items live, instantly.' },
+                  { title: 'Full Diet Planner & History', desc: 'Unlock customizable weekly goal planners.' }
+                ].map((feat, i) => (
+                  <div key={i} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+                    <span style={{ color: '#f59e0b', fontSize: '16px', lineHeight: '1.2' }}>✓</span>
+                    <div>
+                      <h5 style={{ fontSize: '13px', fontWeight: 700, color: '#fff', margin: 0 }}>{feat.title}</h5>
+                      <p style={{ fontSize: '11px', color: 'rgba(255, 255, 255, 0.5)', margin: '2px 0 0 0' }}>{feat.desc}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Plans Selector */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {/* Yearly Plan (Best Value) */}
+                <div
+                  onClick={() => setPaywallPlan('yearly')}
+                  style={{
+                    padding: '16px',
+                    borderRadius: '20px',
+                    background: paywallPlan === 'yearly' ? 'rgba(245, 158, 11, 0.08)' : 'rgba(255,255,255,0.02)',
+                    border: paywallPlan === 'yearly' ? '2px solid #f59e0b' : '1px solid rgba(255,255,255,0.06)',
+                    cursor: 'pointer',
+                    position: 'relative',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  <span style={{
+                    position: 'absolute',
+                    top: '-10px',
+                    right: '16px',
+                    background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                    color: '#fff',
+                    fontSize: '9px',
+                    fontWeight: 900,
+                    padding: '3px 8px',
+                    borderRadius: '8px',
+                    textTransform: 'uppercase'
+                  }}>
+                    Save 50%
+                  </span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div style={{
+                        width: '18px', height: '18px', borderRadius: '50%',
+                        border: '2px solid ' + (paywallPlan === 'yearly' ? '#f59e0b' : 'rgba(255,255,255,0.2)'),
+                        display: 'flex', alignItems: 'center', justifyContent: 'center'
+                      }}>
+                        {paywallPlan === 'yearly' && <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#f59e0b' }} />}
+                      </div>
+                      <div>
+                        <h4 style={{ fontSize: '14px', fontWeight: 800, color: '#fff', margin: 0 }}>Yearly Pro Access</h4>
+                        <p style={{ fontSize: '11px', color: 'rgba(255, 255, 255, 0.5)', margin: '2px 0 0 0' }}>12 months unlimited scanning</p>
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <span style={{ fontSize: '18px', fontWeight: 900, color: '#fff' }}>1800 Rs</span>
+                      <p style={{ fontSize: '10px', color: 'rgba(255,255,255,0.4)', margin: 0 }}>150 Rs / month</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Monthly Plan */}
+                <div
+                  onClick={() => setPaywallPlan('monthly')}
+                  style={{
+                    padding: '16px',
+                    borderRadius: '20px',
+                    background: paywallPlan === 'monthly' ? 'rgba(245, 158, 11, 0.08)' : 'rgba(255,255,255,0.02)',
+                    border: paywallPlan === 'monthly' ? '2px solid #f59e0b' : '1px solid rgba(255,255,255,0.06)',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div style={{
+                        width: '18px', height: '18px', borderRadius: '50%',
+                        border: '2px solid ' + (paywallPlan === 'monthly' ? '#f59e0b' : 'rgba(255,255,255,0.2)'),
+                        display: 'flex', alignItems: 'center', justifyContent: 'center'
+                      }}>
+                        {paywallPlan === 'monthly' && <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#f59e0b' }} />}
+                      </div>
+                      <div>
+                        <h4 style={{ fontSize: '14px', fontWeight: 800, color: '#fff', margin: 0 }}>Monthly Pro Access</h4>
+                        <p style={{ fontSize: '11px', color: 'rgba(255, 255, 255, 0.5)', margin: '2px 0 0 0' }}>1 month unlimited scanning</p>
+                      </div>
+                    </div>
+                    <div>
+                      <span style={{ fontSize: '18px', fontWeight: 900, color: '#fff' }}>300 Rs</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                disabled={isProcessingPayment}
+                onClick={() => handleActivatePremium(paywallPlan)}
+                className="btn-primary"
+                style={{
+                  background: 'linear-gradient(135deg, #0284c7, #0ea5e9)',
+                  color: '#fff',
+                  border: 'none',
+                  fontWeight: 800,
+                  fontSize: '14px',
+                  padding: '14px',
+                  borderRadius: '14px',
+                  cursor: isProcessingPayment ? 'default' : 'pointer',
+                  boxShadow: '0 4px 15px rgba(14, 165, 233, 0.4)',
+                  transition: 'all 0.2s',
+                  width: '100%',
+                  marginTop: '10px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px'
+                }}
+              >
+                {isProcessingPayment ? (
+                  <>
+                    <div style={{ width: '16px', height: '16px', border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                    <span>Opening Checkout...</span>
+                  </>
+                ) : (
+                  <span>🔒 Proceed to Checkout</span>
+                )}
+              </button>
+
+              <button
+                disabled={isProcessingPayment}
+                onClick={handleTestCheckout}
+                className="btn-primary"
+                style={{
+                  background: 'linear-gradient(135deg, #10b981, #059669)',
+                  color: '#fff',
+                  border: 'none',
+                  fontWeight: 800,
+                  fontSize: '14px',
+                  padding: '14px',
+                  borderRadius: '14px',
+                  cursor: isProcessingPayment ? 'default' : 'pointer',
+                  boxShadow: '0 4px 15px rgba(16, 185, 129, 0.4)',
+                  transition: 'all 0.2s',
+                  width: '100%',
+                  marginTop: '10px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px'
+                }}
+              >
+                {isProcessingPayment ? (
+                  <>
+                    <div style={{ width: '16px', height: '16px', border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                    <span>Initiating Test Checkout...</span>
+                  </>
+                ) : (
+                  <span>💳 Pay Now (Test 300 Rs)</span>
+                )}
+              </button>
+            </div>
+           )}
+
+          {paywallStep === 'checkout' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', position: 'relative' }}>
+              
+              {/* Processing Overlay inside Checkout */}
+              {isProcessingPayment && paymentProgressStep && (
+                <div style={{
+                  position: 'absolute',
+                  top: 0, left: 0,
+                  width: '100%', height: '100%',
+                  background: 'rgba(13, 17, 28, 0.96)',
+                  zIndex: 20,
+                  borderRadius: '16px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '16px',
+                  padding: '24px',
+                  boxSizing: 'border-box'
+                }}>
+                  <div style={{
+                    width: '40px',
+                    height: '40px',
+                    border: '3px solid rgba(14, 165, 233, 0.1)',
+                    borderTopColor: '#0ea5e9',
+                    borderRadius: '50%',
+                    animation: 'spin 1s linear infinite'
+                  }} />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{
+                      width: '24px',
+                      height: '24px',
+                      borderRadius: '6px',
+                      background: '#0ea5e9',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontWeight: 900,
+                      color: '#fff',
+                      fontSize: '13px'
+                    }}>CF</div>
+                    <span style={{ fontSize: '14px', fontWeight: 800, color: '#fff' }}>Cashfree Gateway</span>
+                  </div>
+                  <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.7)', textAlign: 'center', margin: 0, minHeight: '3em' }}>
+                    {paymentProgressStep}
+                  </p>
+                </div>
+              )}
+              <div>
+                <button
+                  onClick={() => setPaywallStep('plans')}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'rgba(255,255,255,0.6)',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    padding: 0,
+                    marginBottom: '10px'
+                  }}
+                >
+                  <ChevronLeft size={16} /> Back to plans
+                </button>
+                
+                {/* Brand header */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                  <div style={{
+                    width: '32px',
+                    height: '32px',
+                    borderRadius: '8px',
+                    background: '#0ea5e9',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontWeight: 900,
+                    color: '#fff',
+                    fontSize: '15px',
+                    boxShadow: '0 4px 10px rgba(14, 165, 233, 0.4)'
+                  }}>
+                    CF
+                  </div>
+                  <div>
+                    <h3 style={{ fontSize: '18px', fontWeight: 900, color: '#fff', margin: 0 }}>
+                      Cashfree Checkout
+                    </h3>
+                    <p style={{ fontSize: '11px', color: 'rgba(255,255,255,0.4)', margin: '1px 0 0 0' }}>
+                      Secure Gateway Integration
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Payment Summary */}
+              <div style={{
+                background: 'rgba(14, 165, 233, 0.08)',
+                border: '1px solid rgba(14, 165, 233, 0.2)',
+                borderRadius: '16px',
+                padding: '14px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}>
+                <div>
+                  <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.5)' }}>PLAN SELECTED</span>
+                  <h4 style={{ fontSize: '13px', fontWeight: 800, color: '#fff', margin: '2px 0 0 0' }}>
+                    {paywallPlan === 'yearly' ? 'Yearly Pro (12 Months)' : 'Monthly Pro (1 Month)'}
+                  </h4>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.5)', display: 'block' }}>TOTAL AMOUNT</span>
+                  <span style={{ fontSize: '18px', fontWeight: 950, color: '#fff' }}>
+                    {paywallPlan === 'yearly' ? '₹ 1,800' : '₹ 300'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Payer details & Order ID */}
+              <div style={{
+                background: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid rgba(255, 255, 255, 0.06)',
+                borderRadius: '16px',
+                padding: '12px 14px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px'
+              }}>
+                <div style={{ display: 'flex', fontSize: '11px', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'rgba(255,255,255,0.4)' }}>PAYER NAME</span>
+                  <span style={{ color: '#fff', fontWeight: 700 }}>{profile.name || user?.email?.split('@')[0] || 'Guest User'}</span>
+                </div>
+                <div style={{ display: 'flex', fontSize: '11px', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'rgba(255,255,255,0.4)' }}>PAYER EMAIL</span>
+                  <span style={{ color: '#fff', fontWeight: 700 }}>{user?.email || profile.email || 'guest@healthybit.app'}</span>
+                </div>
+                <div style={{ display: 'flex', fontSize: '11px', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'rgba(255,255,255,0.4)' }}>ORDER REFERENCE</span>
+                  <span style={{ color: '#0ea5e9', fontFamily: 'monospace', fontWeight: 700 }}>
+                    {currentOrderId || 'GEN_ORD_LOADING'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {paywallStep === 'success' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', alignItems: 'center', textAlign: 'center', padding: '10px 0' }}>
+              <div style={{
+                width: '72px',
+                height: '72px',
+                borderRadius: '50%',
+                background: 'linear-gradient(135deg, #10b981, #059669)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 0 25px rgba(16, 185, 129, 0.4)',
+                animation: 'bounce 1s infinite'
+              }}>
+                <Check size={36} color="#fff" />
+              </div>
+
+              <div>
+                <h3 style={{ fontSize: '24px', fontWeight: 900, color: '#10b981', margin: 0 }}>
+                  Upgrade Successful!
+                </h3>
+                <p style={{ fontSize: '14px', color: 'rgba(255,255,255,0.7)', margin: '8px 0 0 0' }}>
+                  Welcome to HealthyBit Pro! You now have unlimited food scans, live visual camera feeds, and premium diet features.
+                </p>
+              </div>
+
+              <div style={{
+                background: 'rgba(16, 185, 129, 0.08)',
+                border: '1px solid rgba(16, 185, 129, 0.2)',
+                borderRadius: '16px',
+                padding: '14px',
+                width: '100%'
+              }}>
+                <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.5)', textTransform: 'uppercase', fontWeight: 800 }}>Account Tier Status</span>
+                <h4 style={{ fontSize: '15px', fontWeight: 800, color: '#f59e0b', margin: '4px 0 0 0' }}>⭐ PREMIUM USER ACTIVE</h4>
+              </div>
+
+              <button
+                onClick={() => {
+                  setShowPaywall(false);
+                  setPaywallStep('plans');
+                }}
+                className="btn-primary"
+                style={{
+                  background: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+                  color: '#fff',
+                  border: 'none',
+                  fontWeight: 800,
+                  fontSize: '13px',
+                  padding: '12px 24px',
+                  borderRadius: '12px',
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 12px rgba(37, 99, 235, 0.3)',
+                  transition: 'all 0.2s',
+                  width: '100%'
+                }}
+              >
+                Awesome, Let's Go!
+              </button>
+            </div>
+          )}
+
+          {paywallStep === 'failure' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', alignItems: 'center', textAlign: 'center', padding: '10px 0' }}>
+              <div style={{
+                width: '72px',
+                height: '72px',
+                borderRadius: '50%',
+                background: 'linear-gradient(135deg, #ef4444, #dc2626)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 0 25px rgba(239, 68, 68, 0.4)',
+                animation: 'shake 0.5s ease-in-out'
+              }}>
+                <X size={36} color="#fff" />
+              </div>
+
+              <div>
+                <h3 style={{ fontSize: '24px', fontWeight: 900, color: '#ef4444', margin: 0 }}>
+                  Payment Failed
+                </h3>
+                <p style={{ fontSize: '14px', color: 'rgba(255,255,255,0.7)', margin: '8px 0 0 0' }}>
+                  {paymentErrorMessage || 'Your payment transaction was not successful. Please try again.'}
+                </p>
+              </div>
+
+              <button
+                onClick={() => {
+                  setPaywallStep('plans');
+                }}
+                className="btn-primary"
+                style={{
+                  background: 'linear-gradient(135deg, #ef4444, #dc2626)',
+                  color: '#fff',
+                  border: 'none',
+                  fontWeight: 800,
+                  fontSize: '13px',
+                  padding: '12px 24px',
+                  borderRadius: '12px',
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 12px rgba(239, 68, 68, 0.3)',
+                  transition: 'all 0.2s',
+                  width: '100%'
+                }}
+              >
+                Try Again
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )}
+
   {/* Tab Navigation & FAB Button Bar */ }
   <div className="bottom-nav">
     <button
@@ -5476,6 +9191,51 @@ Guidelines:
       <span>Settings</span>
     </button>
   </div>
-    </div >
+  
+  {/* Global File / Native Camera input */}
+  <input
+    ref={fileInputRef}
+    type="file"
+    accept="image/*"
+    onChange={handleImageUpload}
+    style={{ display: 'none' }}
+  />
+  
+  <input
+    ref={nativeCameraInputRef}
+    type="file"
+    accept="image/*"
+    capture="environment"
+    onChange={handleImageUpload}
+    style={{ display: 'none' }}
+  />
+
+  {/* Global Toast Notification */}
+  {toast && (
+    <div 
+      className="toast-notification animate-toast"
+      style={{
+        background: toast.type === 'success' 
+          ? 'rgba(16, 185, 129, 0.95)' 
+          : toast.type === 'error'
+          ? 'rgba(239, 68, 68, 0.95)'
+          : 'rgba(59, 130, 246, 0.95)',
+        border: toast.type === 'success'
+          ? '1px solid rgba(16, 185, 129, 0.2)'
+          : toast.type === 'error'
+          ? '1px solid rgba(239, 68, 68, 0.2)'
+          : '1px solid rgba(59, 130, 246, 0.2)',
+        color: '#fff',
+        backdropFilter: 'blur(10px)',
+        WebkitBackdropFilter: 'blur(10px)'
+      }}
+    >
+      {toast.type === 'success' && <Check size={16} />}
+      {toast.type === 'error' && <AlertCircle size={16} />}
+      {toast.type === 'info' && <Sparkles size={16} />}
+      <span>{toast.message}</span>
+    </div>
+  )}
+</div >
   );
 }

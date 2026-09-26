@@ -503,7 +503,7 @@ export default function App() {
   };
 
   // Image compressor utility to speed up image analysis and saving
-  const compressImage = (base64Str: string, maxWidth = 640, quality = 0.6): Promise<string> => {
+  const compressImage = (base64Str: string, maxWidth = 512, quality = 0.55): Promise<string> => {
     return new Promise((resolve) => {
       const img = new window.Image();
       img.src = base64Str;
@@ -2111,7 +2111,7 @@ export default function App() {
       const canvas = document.createElement('canvas');
       const videoWidth = videoRef.current.videoWidth || 640;
       const videoHeight = videoRef.current.videoHeight || 480;
-      const maxWidth = 640;
+      const maxWidth = 512;
       let width = videoWidth;
       let height = videoHeight;
       if (width > maxWidth || height > maxWidth) {
@@ -2128,7 +2128,7 @@ export default function App() {
       const ctx = canvas.getContext('2d');
       if (ctx) {
         ctx.drawImage(videoRef.current, 0, 0, width, height);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.55);
         setScannedImage(dataUrl);
         stopCamera();
         analyzeCapturedImage(dataUrl);

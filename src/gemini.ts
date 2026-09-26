@@ -161,27 +161,23 @@ STRICT ACCURACY RULES:
 - List every component as a separate ingredient (include oils, dressings, and side sauces).
 - Use standard USDA nutrition values as your reference.`;
 
-const IMAGE_ANALYSIS_PROMPT = `You are an expert dietitian and food recognition AI with advanced computer vision capability.
+const IMAGE_ANALYSIS_PROMPT = `Expert dietitian and food vision AI.
+TASK: Analyze the food photo accurately and swiftly.
+1. Identify all food items.
+2. Estimate standard portion size and macronutrients (USDA reference).
+3. If NO food is visible (e.g. wall, floor, furniture, screen, person, blank), return foodName: "No food detected", calories: 0, protein: 0, carbs: 0, fats: 0, healthScore: 0, ingredients: [].
 
-TASK: Carefully examine the food photo provided and:
-1. IDENTIFY every food item and component visible in the image.
-2. ESTIMATE portion sizes based on visual cues (plate diameter ~25cm as reference, depth of food, density).
-3. CALCULATE accurate macronutrients using standard USDA nutritional data.
-4. LIST each component as a separate ingredient with its own breakdown.
-
-Be SPECIFIC — do not give vague answers. If you see rice, estimate "Steamed White Rice (200g)". If you see chicken, identify the cooking method and estimate weight.
-
-Return ONLY a raw JSON object — no markdown, no explanation, no preamble, no code fences. Start your response with { immediately:
+OUTPUT FORMAT: Return ONLY valid JSON starting with { immediately (no code fences, no markdown):
 {
-  "foodName": "Specific descriptive name of what you see (e.g. Butter Chicken with Basmati Rice)",
-  "calories": <total integer>,
-  "protein": <total grams integer>,
-  "carbs": <total grams integer>,
-  "fats": <total grams integer>,
+  "foodName": "Specific meal name (< 5 words)",
+  "calories": <integer>,
+  "protein": <integer>,
+  "carbs": <integer>,
+  "fats": <integer>,
   "healthScore": <1-100 integer>,
   "ingredients": [
     {
-      "name": "Ingredient with estimated weight/quantity (e.g. Butter Chicken Curry 180g)",
+      "name": "Ingredient with estimated weight (e.g. Rice 150g)",
       "calories": <integer>,
       "protein": <integer>,
       "carbs": <integer>,
@@ -190,17 +186,7 @@ Return ONLY a raw JSON object — no markdown, no explanation, no preamble, no c
   ]
 }
 
-SPEED REQUIREMENT: Keep JSON compact and process as fast as possible. Keep the foodName short and simple (under 5 words). Do not list more than 5 ingredients.
-
-STRICT ACCURACY RULES:
-- CALORIE-MACRO FORMULA: Total calories MUST equal (protein * 4) + (carbs * 4) + (fats * 9) within +/- 5 kcal. Do not violate this formula.
-- INGREDIENT CONSISTENCY: Every ingredient's calories must also equal (protein * 4) + (carbs * 4) + (fats * 9) within +/- 5 kcal.
-- The sum of ingredient calories/macros must equal the total calories/macros within a 5% margin.
-- Identify cooking method (fried, grilled, steamed, etc.) — it affects calories significantly. Estimate hidden preparation fats (e.g. Butter/Oil used to sauté).
-- If the image is blurry, contains partially eaten food, or only has a single ingredient, make your best educated guess.
-- If there is NO food item visible in the image (such as if the camera is pointing at a wall, floor, furniture, laptop screen, keyboard, ceiling, person, or the view is blank/blocked), you MUST set "foodName" to "No food detected", and set calories, protein, carbs, fats, and healthScore to 0. Do NOT hallucinate or guess food in this case.
-- healthScore: 80-100 = whole foods/very healthy, 60-79 = balanced, 40-59 = moderate, 0-39 = high fat/sugar/processed.
-- Always include ALL visible components (sides, sauces, drinks, garnishes).`;
+SPEED & ACCURACY: Max 4 ingredients. Total calories must match (protein * 4) + (carbs * 4) + (fats * 9) within +/- 5 kcal.`;
 
 // ─── Supabase endpoint ────────────────────────────────────────────────────────
 
@@ -223,7 +209,7 @@ export async function analyzeFoodText(text: string, _apiKey?: string): Promise<F
       body: JSON.stringify({
         action: 'analyze_text',
         payload: {
-          model: 'gemma-4-31b',
+          model: 'gemini-2.5-flash',
           prompt: `${TEXT_ANALYSIS_PROMPT}\n\nFood to analyze: "${text}"`
         }
       })
@@ -280,7 +266,7 @@ export async function analyzeFoodImage(
       body: JSON.stringify({
         action: 'analyze_image',
         payload: {
-          model: 'gemini-3.1-flash-lite',
+          model: 'gemini-2.5-flash',
           prompt: IMAGE_ANALYSIS_PROMPT,
           mimeType: detectedMime || 'image/jpeg',
           data: cleanBase64
@@ -353,7 +339,7 @@ The four meals' calories must sum close to ${targetCalories}. Be specific with i
     const response = await fetch(PROXY_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'generate_diet', payload: { model: 'gemma-4-31b', prompt } })
+      body: JSON.stringify({ action: 'generate_diet', payload: { model: 'gemini-2.5-flash', prompt } })
     });
 
     if (!response.ok) throw new Error(`Proxy ${response.status}`);
@@ -404,7 +390,7 @@ export async function analyzeLiveFoodFrame(
       body: JSON.stringify({
         action: 'analyze_image',
         payload: {
-          model: 'gemini-3-flash-live',
+          model: 'gemini-2.5-flash',
           prompt: IMAGE_ANALYSIS_PROMPT,
           mimeType: detectedMime || 'image/jpeg',
           data: cleanBase64

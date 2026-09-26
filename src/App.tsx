@@ -224,8 +224,14 @@ export default function App() {
   const [isAnalyzingFrame, setIsAnalyzingFrame] = useState(false);
   const [shakeDetectedVisual, setShakeDetectedVisual] = useState(false);
   const lastShakeTimeRef = useRef(0);
+  const foodDetectedAtRef = useRef(0);
   const liveScanDetectedFoodRef = useRef<FoodAnalysisResult | null>(null);
   liveScanDetectedFoodRef.current = liveScanDetectedFood;
+  if (liveScanDetectedFood && foodDetectedAtRef.current === 0) {
+    foodDetectedAtRef.current = Date.now();
+  } else if (!liveScanDetectedFood) {
+    foodDetectedAtRef.current = 0;
+  }
   const isAnalyzingFrameRef = useRef(false);
   isAnalyzingFrameRef.current = isAnalyzingFrame;
   const isSavingMealRef = useRef(false);
@@ -1317,13 +1323,20 @@ export default function App() {
       // 1. In Diet tab live scanner
       if (activeTab === 'diet' && cameraPermissionStatus === 'granted') {
         if (!liveScanDetectedFoodRef.current) {
-          // Food not scanned yet: trigger live scan!
+          // Food not scanned yet: stabilize for 250ms then trigger live scan for sharp camera focus
           if (!isAnalyzingFrameRef.current) {
-            showToast("📱 Shake detected! Scanning food frame...", "info");
-            handleLiveScanRef.current(false);
+            showToast("📱 Shake detected! Stabilizing & scanning food...", "info");
+            setTimeout(() => {
+              if (!liveScanDetectedFoodRef.current && !isAnalyzingFrameRef.current) {
+                handleLiveScanRef.current(false);
+              }
+            }, 250);
           }
         } else {
-          // Food already scanned: shake confirms & logs meal to diary!
+          // Food already scanned: ensure at least 2.5s cooldown since food was detected before shake logs it
+          if (Date.now() - foodDetectedAtRef.current < 2500) {
+            return;
+          }
           if (!isSavingMealRef.current) {
             showToast("📱 Shake detected! Logging meal to diary... 🎉", "success");
             handleSaveLiveScannedFoodRef.current();
@@ -1331,8 +1344,10 @@ export default function App() {
         }
       } else if (showCameraScannerRef.current) {
         // 2. In full-screen modal camera scanner
-        showToast("📱 Shake detected! Capturing food photo...", "info");
-        capturePhotoRef.current();
+        showToast("📱 Shake detected! Stabilizing & capturing photo...", "info");
+        setTimeout(() => {
+          capturePhotoRef.current();
+        }, 250);
       }
     };
 
@@ -2353,7 +2368,7 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
           body: JSON.stringify({
             action: 'chat',
             payload: {
-              model: 'gemma-4-31b',
+              model: 'gemini-2.5-flash',
               system_instruction: { parts: [{ text: systemInstruction }] },
               contents: historyContents
             }
@@ -2367,7 +2382,6 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
       }
 
       if (!aiResponse) {
-        await new Promise(r => setTimeout(r, 900 + Math.random() * 600));
         const l = userMsg.toLowerCase();
         const rand = (arr: string[]) => arr[Math.floor(Math.random() * arr.length)];
 
@@ -3279,8 +3293,24 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
       );
     };
 
+    const continueBtnStyle = (isActive: boolean): React.CSSProperties => ({
+      width: '100%',
+      padding: '16px',
+      borderRadius: '24px',
+      background: isActive ? 'var(--text-primary)' : '#e5e7eb',
+      color: isActive ? '#fff' : '#9ca3af',
+      fontWeight: 700,
+      fontSize: '15px',
+      boxShadow: isActive ? '0 4px 14px rgba(0,0,0,0.12)' : 'none',
+      cursor: isActive ? 'pointer' : 'not-allowed',
+      marginTop: 'auto',
+      marginBottom: '20px',
+      flexShrink: 0,
+      transition: 'all 0.2s ease'
+    });
+
     return (
-      <div className="app-container" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', position: 'relative' }}>
+      <div className="app-container" style={{ display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', position: 'relative', width: '100%' }}>
         {/* Confetti Canvas */}
         {onboardingStep === 13 && committed && (
           <canvas
@@ -3374,7 +3404,7 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
         )}
 
         {/* Onboarding Screen Body */}
-        <div style={{ flex: 1, padding: '20px', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '20px', overflowY: 'auto', minHeight: 0 }}>
+        <div style={{ flex: 1, padding: '16px 20px 24px 20px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', gap: '16px', overflowY: 'auto', minHeight: 0, boxSizing: 'border-box' }}>
 
           {/* SCREEN 0: Animated Splash Screen */}
           {onboardingStep === 0 && (
@@ -3508,14 +3538,33 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
               <button
                 onClick={() => setOnboardingStep(2)}
                 className="btn-primary"
-                style={{ width: '100%', padding: '16px', borderRadius: '24px', background: 'var(--text-primary)', fontWeight: 700 }}
+                style={{
+                  width: '100%',
+                  padding: '16px',
+                  borderRadius: '24px',
+                  background: 'var(--text-primary)',
+                  fontWeight: 700,
+                  fontSize: '15px',
+                  marginTop: 'auto',
+                  marginBottom: '10px',
+                  flexShrink: 0,
+                  boxShadow: '0 4px 14px rgba(0,0,0,0.12)'
+                }}
               >
                 Get Started
               </button>
 
               <button
                 onClick={() => { setAuthMode('login'); setOnboardingStep(14); }}
-                style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', fontSize: '13px', fontWeight: 700, cursor: 'pointer' }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--text-secondary)',
+                  fontSize: '13px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  marginBottom: '16px'
+                }}
               >
                 Already have an account? Sign in
               </button>
@@ -3683,16 +3732,7 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
                 disabled={!onboardingSex}
                 onClick={() => setOnboardingStep(3)}
                 className="btn-primary"
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  borderRadius: '24px',
-                  background: onboardingSex ? 'var(--text-primary)' : '#e5e7eb',
-                  color: onboardingSex ? '#fff' : '#9ca3af',
-                  fontWeight: 700,
-                  boxShadow: onboardingSex ? '0 4px 12px rgba(0,0,0,0.08)' : 'none',
-                  cursor: onboardingSex ? 'pointer' : 'not-allowed'
-                }}
+                style={continueBtnStyle(!!onboardingSex)}
               >
                 Continue
               </button>
@@ -3778,16 +3818,7 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
                 disabled={!onboardingWorkouts}
                 onClick={() => setOnboardingStep(4)}
                 className="btn-primary"
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  borderRadius: '24px',
-                  background: onboardingWorkouts ? 'var(--text-primary)' : '#e5e7eb',
-                  color: onboardingWorkouts ? '#fff' : '#9ca3af',
-                  fontWeight: 700,
-                  boxShadow: onboardingWorkouts ? '0 4px 12px rgba(0,0,0,0.08)' : 'none',
-                  cursor: onboardingWorkouts ? 'pointer' : 'not-allowed'
-                }}
+                style={continueBtnStyle(!!onboardingWorkouts)}
               >
                 Continue
               </button>
@@ -3903,15 +3934,7 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
               <button
                 onClick={() => setOnboardingStep(5)}
                 className="btn-primary"
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  borderRadius: '24px',
-                  background: 'var(--text-primary)',
-                  color: '#fff',
-                  fontWeight: 700,
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.08)'
-                }}
+                style={continueBtnStyle(true)}
               >
                 Continue
               </button>
@@ -4031,15 +4054,7 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
               <button
                 onClick={() => setOnboardingStep(6)}
                 className="btn-primary"
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  borderRadius: '24px',
-                  background: 'var(--text-primary)',
-                  color: '#fff',
-                  fontWeight: 700,
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.08)'
-                }}
+                style={continueBtnStyle(true)}
               >
                 Continue
               </button>
@@ -4139,16 +4154,7 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
                   }
                 }}
                 className="btn-primary"
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  borderRadius: '24px',
-                  background: onboardingGoal ? 'var(--text-primary)' : '#e5e7eb',
-                  color: onboardingGoal ? '#fff' : '#9ca3af',
-                  fontWeight: 700,
-                  boxShadow: onboardingGoal ? '0 4px 12px rgba(0,0,0,0.08)' : 'none',
-                  cursor: onboardingGoal ? 'pointer' : 'not-allowed'
-                }}
+                style={continueBtnStyle(!!onboardingGoal)}
               >
                 Continue
               </button>
@@ -4266,15 +4272,7 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
               <button
                 onClick={() => setOnboardingStep(10)}
                 className="btn-primary"
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  borderRadius: '24px',
-                  background: 'var(--text-primary)',
-                  color: '#fff',
-                  fontWeight: 700,
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.08)'
-                }}
+                style={continueBtnStyle(true)}
               >
                 Continue
               </button>
@@ -4312,15 +4310,7 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
               <button
                 onClick={() => setOnboardingStep(11)}
                 className="btn-primary"
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  borderRadius: '24px',
-                  background: 'var(--text-primary)',
-                  color: '#fff',
-                  fontWeight: 700,
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.08)'
-                }}
+                style={continueBtnStyle(true)}
               >
                 Continue
               </button>
@@ -4409,16 +4399,7 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
                 disabled={!goalSpeed}
                 onClick={() => setOnboardingStep(12)}
                 className="btn-primary"
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  borderRadius: '24px',
-                  background: goalSpeed ? 'var(--text-primary)' : '#e5e7eb',
-                  color: goalSpeed ? '#fff' : '#9ca3af',
-                  fontWeight: 700,
-                  boxShadow: goalSpeed ? '0 4px 12px rgba(0,0,0,0.08)' : 'none',
-                  cursor: goalSpeed ? 'pointer' : 'not-allowed'
-                }}
+                style={continueBtnStyle(!!goalSpeed)}
               >
                 Continue
               </button>
@@ -4495,16 +4476,7 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
                 disabled={obstacles.length === 0}
                 onClick={() => setOnboardingStep(7)}
                 className="btn-primary"
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  borderRadius: '24px',
-                  background: obstacles.length > 0 ? 'var(--text-primary)' : '#e5e7eb',
-                  color: obstacles.length > 0 ? '#fff' : '#9ca3af',
-                  fontWeight: 700,
-                  boxShadow: obstacles.length > 0 ? '0 4px 12px rgba(0,0,0,0.08)' : 'none',
-                  cursor: obstacles.length > 0 ? 'pointer' : 'not-allowed'
-                }}
+                style={continueBtnStyle(obstacles.length > 0)}
               >
                 Continue
               </button>
@@ -4569,15 +4541,7 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
               <button
                 onClick={() => setOnboardingStep(8)}
                 className="btn-primary"
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  borderRadius: '24px',
-                  background: 'var(--text-primary)',
-                  color: '#fff',
-                  fontWeight: 700,
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.08)'
-                }}
+                style={continueBtnStyle(true)}
               >
                 Continue
               </button>
@@ -4629,15 +4593,7 @@ RULE: Always respond in a very friendly, supportive, and warm friend tone, but K
               <button
                 onClick={() => setOnboardingStep(13)}
                 className="btn-primary"
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  borderRadius: '24px',
-                  background: 'var(--text-primary)',
-                  color: '#fff',
-                  fontWeight: 700,
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.08)'
-                }}
+                style={continueBtnStyle(true)}
               >
                 Continue
               </button>
